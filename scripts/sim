@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+export HOST_UID="$(id -u)"
+export HOST_GID="$(id -g)"
+
+if [[ -z "${XDG_RUNTIME_DIR:-}" ]]; then
+    echo "ERROR: XDG_RUNTIME_DIR is not set."
+    echo
+    echo "This script requires a Wayland session."
+    exit 1
+fi
+
+if [[ -z "${WAYLAND_DISPLAY:-}" ]]; then
+    echo "ERROR: WAYLAND_DISPLAY is not set."
+    echo
+    echo "This script requires a Wayland session."
+    exit 1
+fi
+
+WAYLAND_SOCKET="${XDG_RUNTIME_DIR}/${WAYLAND_DISPLAY}"
+
+if [[ ! -S "$WAYLAND_SOCKET" ]]; then
+    echo "ERROR: Wayland socket not found:"
+    echo "    $WAYLAND_SOCKET"
+    exit 1
+fi
+
+echo "==> Wayland:"
+echo "    $WAYLAND_SOCKET"
+
+echo
+echo "==> Building simulator..."
+
+
+CONTAINER_ENGINE="${CONTAINER_ENGINE:-$(scripts/container)}"
+
+"${CONTAINER_ENGINE}" compose run --rm dev \
+    pio run -e sim
+
+echo
+echo "==> Starting simulator..."
+echo
+
+"${CONTAINER_ENGINE}" compose run --rm dev \
+    ./.pio/build/sim/program "$@"

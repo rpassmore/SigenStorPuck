@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+cd "$ROOT"
+
+DEVICE="${1:-}"
+
+if [[ -z "$DEVICE" ]]; then
+    echo "Usage:"
+    echo "    $0 /dev/ttyACM0"
+    exit 1
+fi
+
+if [[ ! -e "$DEVICE" ]]; then
+    echo "ERROR: serial device does not exist:"
+    echo "    $DEVICE"
+    exit 1
+fi
+
+CONTAINER_ENGINE="${CONTAINER_ENGINE:-$(scripts/container)}"
+
+"${CONTAINER_ENGINE}" compose run --rm \
+    --device="$DEVICE:$DEVICE" \
+    dev \
+    pio device monitor \
+        --port "$DEVICE" \
+        --baud 115200
