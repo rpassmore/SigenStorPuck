@@ -132,7 +132,7 @@ bool display_begin(uint8_t rotation) {
       PUCK_LCD_HSYNC_POLARITY, PUCK_LCD_HSYNC_FRONT_PORCH, PUCK_LCD_HSYNC_PULSE_WIDTH,
       PUCK_LCD_HSYNC_BACK_PORCH,
       PUCK_LCD_VSYNC_POLARITY, PUCK_LCD_VSYNC_FRONT_PORCH, PUCK_LCD_VSYNC_PULSE_WIDTH,
-      PUCK_LCD_VSYNC_BACK_PORCH);
+      PUCK_LCD_VSYNC_BACK_PORCH, PUCK_LCD_PCLK_HZ);
   // PUCK_LCD_PCLK_HZ is not passed here: the verified working constructor call
   // this is based on (moononournation/Arduino_GFX#465, same board) doesn't
   // take an explicit pixel-clock argument at this GFX library version, so the
@@ -159,8 +159,27 @@ bool display_begin(uint8_t rotation) {
   s_panel->fillScreen(RGB565_BLACK);
 
   pinMode(PUCK_LCD_BL, OUTPUT);
-  ledcAttach(PUCK_LCD_BL, 5000 /* Hz */, 8 /* bits */);
-  ledcWrite(PUCK_LCD_BL, PUCK_LCD_BRIGHTNESS);
+  const bool ledc_ok = ledcAttach(PUCK_LCD_BL, 5000 /* Hz */, 8 /* bits */);
+  if (ledc_ok) {
+    ledcWrite(PUCK_LCD_BL, PUCK_LCD_BRIGHTNESS);
+    Serial.printf("[display] backlight on GPIO%d via PWM, duty %u/255\n",
+                  static_cast<int>(PUCK_LCD_BL), static_cast<unsigned>(PUCK_LCD_BRIGHTNESS));
+  } else {
+    // ledcAttach() can fail without throwing — a silent no-op backlight looks
+    // identical to a wrong pin number from the outside. Falling back to a
+    // plain digital HIGH tells the two apart: if the backlight lights up now,
+    // the PWM attach was the problem (wrong LEDC channel/timer resource, core
+    // version quirk); if it's still dark, PUCK_LCD_BL itself is wrong for
+    // this board, or the backlight circuit needs something PWM can't give it
+    // (e.g. an active-low enable).
+    digitalWrite(PUCK_LCD_BL, HIGH);
+    Serial.printf(
+        "[display] ledcAttach(GPIO%d) failed — backlight forced HIGH with plain "
+        "digitalWrite instead. If it's lit now, brightness control needs a different "
+        "LEDC setup; if it's still dark, check PUCK_LCD_BL against your board and "
+        "whether the backlight enable is active-low.\n",
+        static_cast<int>(PUCK_LCD_BL));
+  }
   s_current_brightness = PUCK_LCD_BRIGHTNESS;
 
   const size_t pixel_count = static_cast<size_t>(PUCK_LCD_WIDTH) * PUCK_LVGL_BUFFER_LINES;
@@ -221,6 +240,7 @@ void display_set_brightness(uint8_t level) {
   s_current_brightness = level;
   if (!s_asleep) {
     ledcWrite(PUCK_LCD_BL, level);
+    Serial.printf("[display] panel brightness set %d\n", level);
   }
 }
 
@@ -237,7 +257,7 @@ void display_set_sleep(bool asleep) {
     // Cutting the backlight is simple, has no failure mode worse than "screen
     // stays dark", and is visually identical to the old board's sleep.
     s_brightness_before_sleep = s_current_brightness;
-    ledcWrite(PUCK_LCD_BL, 0);
+    // ledcWrite(PUCK_LCD_BL, 0);
   } else {
     ledcWrite(PUCK_LCD_BL, s_brightness_before_sleep);
     // The framebuffer never lost its content (no true panel sleep happened),
