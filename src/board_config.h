@@ -1,12 +1,15 @@
-// Every pin and tunable for the Waveshare ESP32-S3-Touch-AMOLED-1.75.
+// Every pin and tunable for the Guition ESP32-4848S040.
 //
 // Nothing else in the tree carries a hardware constant — see CLAUDE.md.
 //
-// Pin values are Waveshare's own, from
-//   waveshareteam/ESP32-S3-Touch-AMOLED-1.75
-//   examples/arduino/libraries/Mylibrary/pin_config.h
-// and match the cross-check recorded in docs/PLAN.md §B1. The panel window
-// offsets come from that repo's examples/arduino/06_LVGL_Widgets sketch.
+// Migrated from the Waveshare ESP32-S3-Touch-AMOLED-1.75. RGB panel pinout
+// cross-checked against three independent sources for this exact board: an
+// owner's working Arduino_GFX sketch (moononournation/Arduino_GFX#465),
+// ESPHome's device page for "Guition-ESP32-S3-4848S040", and the Arduino
+// forum thread that got LVGL running on it (forum.arduino.cc, "ESP32S3 and
+// what GFX library?"). All three agree on CS/SCK/SDA/DE/VSYNC/HSYNC/PCLK and
+// the R/G/B/BL pins below. See MIGRATION_GUIDE.md for what changed and what
+// still needs verifying on real hardware.
 
 #pragma once
 
@@ -15,82 +18,135 @@
 
 // --------------------------------------------------------------- firmware ---
 
+// Unchanged value from the Waveshare build — bump this yourself once the
+// migration is verified working; not something to guess at from here.
 #define PUCK_FW_VERSION "0.12.0"
 
 // ---------------------------------------------------------------- display ---
 
-// 466x466 round AMOLED driven by a CO5300 over QSPI.
-static constexpr int16_t PUCK_LCD_WIDTH = 466;
-static constexpr int16_t PUCK_LCD_HEIGHT = 466;
+// 480x480 square ST7701 IPS LCD, ESP32-S3 RGB parallel bus. Replaces the
+// 466x466 round CO5300 AMOLED over QSPI — there is no QSPI bus, no
+// column/row window offset, and no CO5300 rotation-command quirk here; this
+// panel is a continuously-scanned framebuffer rather than a command-window
+// panel, and display.cpp's rotation/flush code changed accordingly.
+static constexpr int16_t PUCK_LCD_WIDTH = 480;
+static constexpr int16_t PUCK_LCD_HEIGHT = 480;
 
-static constexpr int8_t PUCK_LCD_CS = 12;
-static constexpr int8_t PUCK_LCD_SCLK = 38;
-static constexpr int8_t PUCK_LCD_D0 = 4;
-static constexpr int8_t PUCK_LCD_D1 = 5;
-static constexpr int8_t PUCK_LCD_D2 = 6;
-static constexpr int8_t PUCK_LCD_D3 = 7;
-static constexpr int8_t PUCK_LCD_RST = 39;
+// 3-wire bus for the ST7701's own init command sequence, before the RGB pixel
+// bus takes over. CS/SCLK names kept from the old board; SDA is new — the old
+// board's D0-D3 were QSPI data lines with no equivalent here.
+static constexpr int8_t PUCK_LCD_CS = 39;
+static constexpr int8_t PUCK_LCD_SCLK = 48;
+static constexpr int8_t PUCK_LCD_SDA = 47;
+static constexpr int8_t PUCK_LCD_RST = -1;  // not broken out on this board
 
-// The CO5300's addressable window does not start at the origin: panel column 0
-// is column 6 of controller RAM. Omit this and every frame is shifted sideways.
-static constexpr uint8_t PUCK_LCD_COL_OFFSET = 6;
-static constexpr uint8_t PUCK_LCD_ROW_OFFSET = 0;
+static constexpr int8_t PUCK_LCD_DE = 18;
+static constexpr int8_t PUCK_LCD_VSYNC = 17;
+static constexpr int8_t PUCK_LCD_HSYNC = 16;
+static constexpr int8_t PUCK_LCD_PCLK = 21;
 
+static constexpr int8_t PUCK_LCD_R0 = 11;
+static constexpr int8_t PUCK_LCD_R1 = 12;
+static constexpr int8_t PUCK_LCD_R2 = 13;
+static constexpr int8_t PUCK_LCD_R3 = 14;
+static constexpr int8_t PUCK_LCD_R4 = 0;
+
+static constexpr int8_t PUCK_LCD_G0 = 8;
+static constexpr int8_t PUCK_LCD_G1 = 20;  // was suspected to conflict with touch SCL on real
+                                            // hardware (silent hang at display bring-up); touch
+                                            // SCL has been moved to GPIO45 instead — see PUCK_I2C_SCL.
+static constexpr int8_t PUCK_LCD_G2 = 3;
+static constexpr int8_t PUCK_LCD_G3 = 46;
+static constexpr int8_t PUCK_LCD_G4 = 9;
+static constexpr int8_t PUCK_LCD_G5 = 10;
+
+static constexpr int8_t PUCK_LCD_B0 = 4;
+static constexpr int8_t PUCK_LCD_B1 = 5;
+static constexpr int8_t PUCK_LCD_B2 = 6;
+static constexpr int8_t PUCK_LCD_B3 = 7;
+static constexpr int8_t PUCK_LCD_B4 = 15;
+
+// Timing porches for this panel at 480x480, from the same cross-checked
+// sources above. If the image is shifted, torn, or won't sync, these plus
+// PUCK_LCD_PCLK_HZ are the first thing to tune.
+static constexpr uint8_t PUCK_LCD_HSYNC_POLARITY = 1;
+static constexpr uint16_t PUCK_LCD_HSYNC_FRONT_PORCH = 10;
+static constexpr uint16_t PUCK_LCD_HSYNC_PULSE_WIDTH = 8;
+static constexpr uint16_t PUCK_LCD_HSYNC_BACK_PORCH = 50;
+static constexpr uint8_t PUCK_LCD_VSYNC_POLARITY = 1;
+static constexpr uint16_t PUCK_LCD_VSYNC_FRONT_PORCH = 10;
+static constexpr uint16_t PUCK_LCD_VSYNC_PULSE_WIDTH = 8;
+static constexpr uint16_t PUCK_LCD_VSYNC_BACK_PORCH = 20;
+static constexpr int32_t PUCK_LCD_PCLK_HZ = 12000000;
+
+// Software rotation applied in display.cpp's flush callback, same mechanism
+// and same reasoning as the old board (see display.cpp) — kept as a named
+// constant here rather than hardcoded 0, same as before.
 static constexpr uint8_t PUCK_LCD_ROTATION = 0;
 
-// Arduino_ESP32QSPI's own default, stated here so it is tunable in one place if
-// QSPI turns out to be marginal.
-static constexpr int32_t PUCK_LCD_QSPI_HZ = 40000000;
-
-// There is no PWM backlight pin on this board. Brightness is a CO5300 command,
-// 0..255, issued via Arduino_CO5300::setBrightness().
+// Unlike the old board, this one *does* have a PWM backlight pin — the
+// CO5300's setBrightness() command doesn't exist here, so display.cpp drives
+// this pin with ledc instead. Value is the boot-time default, before
+// settings load; same meaning and same number as before.
+static constexpr int8_t PUCK_LCD_BL = 38;
 static constexpr uint8_t PUCK_LCD_BRIGHTNESS = 200;
 
-// LVGL partial draw buffer, in whole display lines. 40 x 466 x 2 B = 37 KB,
-// which fits in DMA-capable internal RAM — the QSPI transfer needs that.
+// LVGL partial draw buffer, in whole display lines. 40 x 480 x 2 B = 38 KB —
+// same line count as before; the maths changed slightly with the 14px-wider
+// panel but the DMA-capable-internal-RAM budget is unaffected.
 static constexpr uint16_t PUCK_LVGL_BUFFER_LINES = 40;
 
 // ---------------------------------------------------------------- buttons ---
-
-// GPIO0, the standard ESP32-S3 strapping pin. Readable at runtime; still forces
-// download mode if held while power is applied.
-static constexpr int8_t PUCK_BUTTON_BOOT = 0;
+//
+// No physical buttons on this board at all — see MIGRATION_GUIDE.md and
+// src/device/buttons.cpp, now a stub. PUCK_BUTTON_BOOT is gone with them.
 
 // ------------------------------------------------------------------ touch ---
 
-static constexpr int8_t PUCK_TOUCH_INT = 11;
-static constexpr int8_t PUCK_TOUCH_RST = 40;
+// Not broken out on this board revision. GT911 clones commonly leave INT/RST
+// floating and rely on whatever address the chip latched at its own
+// power-on, polling over I2C rather than using the IRQ line. Set to real
+// GPIOs if your unit exposes them — touch.cpp's ensure_reset_released()
+// already no-ops cleanly when these are negative.
+static constexpr int8_t PUCK_TOUCH_INT = -1;
+static constexpr int8_t PUCK_TOUCH_RST = -1;
 
-// Published sources disagree on the CST9217's I2C address, so the firmware
-// probes the bus and uses whichever answers (touch.cpp). SensorLib and
-// Waveshare's sketches both say 0x5A; 0x15 is the other value in circulation.
-static constexpr uint8_t PUCK_TOUCH_ADDR_PRIMARY = 0x5A;
-static constexpr uint8_t PUCK_TOUCH_ADDR_ALT = 0x15;
+// GT911 standard address pair — 0x5D is the default when INT is left high or
+// floating during reset, 0x14 when held low. touch.cpp probes both, same
+// pattern as the old board's CST9217 ambiguity.
+static constexpr uint8_t PUCK_TOUCH_ADDR_PRIMARY = 0x5D;
+static constexpr uint8_t PUCK_TOUCH_ADDR_ALT = 0x14;
 
-static constexpr uint8_t PUCK_TOUCH_MAX_POINTS = 2;
+// The GT911 supports up to 5; touch.cpp only ever tracks the first point,
+// same as the old CST9217 driver did, so this is informational rather than
+// something the read path currently uses.
+static constexpr uint8_t PUCK_TOUCH_MAX_POINTS = 5;
 
-// The touch layer is mounted flipped relative to the panel's scan order.
+// UNVERIFIED for this board. These described a fact about how the old
+// CST9217 was physically bonded to the old round glass — they do not
+// necessarily hold for this board's GT911/panel pairing. touch.cpp currently
+// hardcodes the same "flip both axes" math directly in indev_read_cb (kept
+// unchanged from the old driver, same as these say) rather than reading
+// these two constants — so if you find on hardware that the flip is wrong,
+// fix it in touch.cpp's indev_read_cb *and* update these two to match, or
+// they'll describe a mounting that isn't what the code does.
 static constexpr bool PUCK_TOUCH_MIRROR_X = true;
 static constexpr bool PUCK_TOUCH_MIRROR_Y = true;
 
 // -------------------------------------------------------------------- i2c ---
 
-// One bus, shared by touch, the AXP2101 PMIC, the PCF85063 RTC, the QMI8658
-// IMU and the ES8311 codec.
-static constexpr int8_t PUCK_I2C_SDA = 15;
-static constexpr int8_t PUCK_I2C_SCL = 14;
+// One bus. Was shared with the AXP2101 PMIC, PCF85063 RTC, QMI8658 IMU and
+// ES8311 codec on the old board — none of those exist here, so it's touch
+// only now.
+//
+// VERIFY BEFORE FLASHING: see the PUCK_LCD_G1 note above — GPIO20 here
+// may conflict with the display's G1 data line on your specific unit.
+static constexpr int8_t PUCK_I2C_SDA = 19;
+static constexpr int8_t PUCK_I2C_SCL = 45;  // was 20 — that's the display's G1 line, confirmed
+                                             // conflicting on real hardware (silent hang around
+                                             // display bring-up). GPIO45 is the alternative every
+                                             // source flagged as possible; try this first.
 static constexpr uint32_t PUCK_I2C_HZ = 400000;
-
-// Known occupants, so the boot-time bus scan can name what it finds. All of
-// these were confirmed present by the scan on real hardware; 0x40 also answers
-// and has not been identified — it is not in Waveshare's BSP or examples.
-static constexpr uint8_t PUCK_I2C_ADDR_ES8311 = 0x18;
-static constexpr uint8_t PUCK_I2C_ADDR_TCA9554 = 0x20;
-static constexpr uint8_t PUCK_I2C_ADDR_AXP2101 = 0x34;
-static constexpr uint8_t PUCK_I2C_ADDR_LC76G_GPS = 0x50;
-static constexpr uint8_t PUCK_I2C_ADDR_PCF85063 = 0x51;
-static constexpr uint8_t PUCK_I2C_ADDR_QMI8658_L = 0x6B;
-static constexpr uint8_t PUCK_I2C_ADDR_QMI8658_H = 0x6A;
 
 // ----------------------------------------------------------------- serial ---
 
@@ -98,39 +154,39 @@ static constexpr uint32_t PUCK_SERIAL_BAUD = 115200;
 
 // --------------------------------------------------------------------- ui ---
 
-// Text must stay inside the square inscribed in the round bezel, or the corners
-// of a label fall off the glass.
-static constexpr int16_t PUCK_SAFE_SQUARE = 410;
+// The old board's value (410) was sized to stay inside the square inscribed
+// in a *round* bezel — this board's screen is a full 480x480 rectangle, so
+// that constraint doesn't exist any more. Set to a similar proportion of the
+// new width (480 * 410/466 = ~422) as a starting guess rather than the full
+// 480, purely for a bit of edge margin on the overlay title — there is no
+// longer a hardware reason for this to be conservative, so widen it freely
+// if it looks cramped.
+static constexpr int16_t PUCK_SAFE_SQUARE = 422;
 
-// How old a reading may get before the screen calls it stale. The server's poll
-// interval defaults to 5 s, so this allows several missed cycles before
-// complaining (PLAN.md §A4).
+// Unchanged — not hardware-dependent.
 static constexpr uint32_t PUCK_STALE_AFTER_S = 30;
-
-// Decimal places on live kW figures. The payload carries two.
 static constexpr int PUCK_KW_DECIMALS = 2;
-
-// How far back the PWR button may step through past days. The server keeps far
-// more than this; the limit is what is useful to reach one press at a time.
 static constexpr int PUCK_MAX_DAYS_BACK = 7;
-
-// How long a button keeps the screen up during a scheduled off period, before it
-// goes dark again. Long enough to read a figure off it in the dark, short enough
-// that a knock in passing does not light the room until morning. Any touch
-// afterwards extends it, so this is the floor and not the ceiling.
 static constexpr uint32_t PUCK_SCREEN_WAKE_S = 30;
-
-// Below this the battery arc turns amber. An exception, not a gradient: the ring
-// means "the battery" everywhere else, so it should only change colour when
-// there is genuinely something to notice.
 static constexpr float PUCK_SOC_LOW_PCT = 15.0f;
 
 // ------------------------------------------------------- panel longevity ---
 //
+// DESIGN QUESTION: this whole section exists to spread wear across an AMOLED
+// running a static image continuously — see the original comment below,
+// kept verbatim. The ST7701 is an LCD; it has a fixed backlight and
+// liquid-crystal pixels that don't wear the way OLED emitters do; there is
+// no equivalent failure mode here for this to mitigate. Values are kept
+// identical to the old board so behaviour is unchanged if you leave it
+// running — but the better fix is probably to default settings.sweep_min to
+// 0 (or drop the feature/menu entry) rather than tune these for hardware
+// that doesn't need it.
+//
+// Original comment:
 // This is a static image on an AMOLED running continuously, so wear is
 // cumulative per pixel and concentrated wherever something is always lit — the
 // state-of-charge ring, the leg labels, the page dots.
-
+//
 // A band sweeping across the panel, rather than flashing the whole screen white.
 // Every pixel is still lit once per cycle, but a band lights a fraction of them
 // at any instant, so the total added emission is far lower. Flashing all 217k

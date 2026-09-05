@@ -1,152 +1,40 @@
 #include "buttons.h"
 
-#include "board_config.h"
-#include "button_gesture.h"
-#include "display.h"
-#include "poller.h"
-#include "settings.h"
-#include "power.h"
-#include "ui/ui.h"
-
-namespace {
-
-// Long enough to ignore contact bounce on the raw GPIO, short enough not to feel
-// sticky. Only BOOT needs it — see ButtonGestureConfig::debounce_ms.
-constexpr uint32_t DEBOUNCE_MS = 40;
-
-// Two seconds for the middle action, five for the one you should have to mean.
-constexpr uint32_t HOLD_MS = 2000;
-constexpr uint32_t LONG_HOLD_MS = 5000;
-
-// BOOT is a bare GPIO and bounces, so a press shorter than a few tens of
-// milliseconds is contact noise. PWR is debounced by the PMIC before it ever
-// becomes an interrupt, and a minimum there would throw away exactly the taps
-// power.cpp works hardest to preserve — the ones seen whole between two polls,
-// which it can only report as lasting a single loop iteration.
-ButtonGestureState s_boot{{DEBOUNCE_MS, HOLD_MS, LONG_HOLD_MS}};
-ButtonGestureState s_pwr{{/*debounce_ms=*/0, HOLD_MS, LONG_HOLD_MS}};
-
-// Both day steps report what they did, because on a device with no keyboard the
-// only confirmation you get is the screen.
-void step_day(int delta) {
-  if (!ui_day_screen()) {
-    // Screen 1 is live and the settings screen shows an address; neither carries
-    // a date, so stepping the day from them would move an indicator that is not
-    // on screen. Nothing happens, quietly.
-    return;
-  }
-  if (!ui_day_stepping()) {
-    // The Modbus source has daily counters and no dated API behind them, so
-    // there is no past to step into. Better to say so than to look broken.
-    ui_toast("LIVE ONLY");
-    return;
-  }
-  const int before = ui_day_offset();
-  ui_set_day_offset(before + delta);
-  const int after = ui_day_offset();
-  if (after == before) {
-    // Already at today, or as far back as the data goes. No toast: the indicator
-    // above the dots has already answered — it either still names the same day or
-    // still says "Today" — and a message repeating that is noise.
-    return;
-  }
-  // Kick the poll task rather than letting it notice on its own schedule. It
-  // sleeps for the whole poll interval — five seconds by default — and the day
-  // would sit on LOADING for all of it.
-  poller_wake();
-  Serial.printf("[buttons] day offset %d\n", after);
-}
-
-// A gesture that arrives while the panel is asleep does one thing only: turn it
-// back on. Acting on it as well would mean pressing PWR to see the screen and
-// finding yesterday on it, which is a fair description of a bug.
+// No physical buttons on this board. The old gesture table, kept here as a
+// record of what no longer has a trigger:
 //
-// Only the gesture that does the waking is swallowed, not the whole press. So
-// holding through to five seconds still powers the device off: the two-second
-// hold on the way there lights the screen, and the long hold then lands on a
-// device that is awake and can show the message before the rails go.
-bool wake_if_asleep() {
-  if (!display_asleep()) {
-    return false;
-  }
-  display_set_sleep(false);
-  return true;
-}
-
-void handle_pwr(ButtonGesture gesture) {
-  switch (gesture) {
-    case ButtonGesture::Press:
-      step_day(-1);
-      break;
-    case ButtonGesture::Hold: {
-      const bool on = !ui_rotate_enabled();
-      ui_set_rotate_enabled(on);
-      // Persisted, so this is the same switch as the one on the settings page
-      // rather than a runtime shadow of it that a reboot would silently undo.
-      // A human-rate toggle is nothing to NVS.
-      settings_set_rotate_enabled(on);
-      ui_toast(on ? "CYCLE ON" : "CYCLE OFF");
-      Serial.printf("[buttons] auto-cycle %s\n", on ? "on" : "off");
-      break;
-    }
-    case ButtonGesture::LongHold:
-      Serial.println("[buttons] PWR held long, shutting down");
-      ui_toast("POWERING OFF");
-      // Long enough for the message to land on the glass before the rails go.
-      delay(400);
-      power_shutdown();
-      break;
-    default:
-      break;
-  }
-}
-
-void handle_boot(ButtonGesture gesture) {
-  switch (gesture) {
-    case ButtonGesture::Press:
-      step_day(1);
-      break;
-    case ButtonGesture::Hold:
-      ui_next_screen();
-      break;
-    case ButtonGesture::LongHold:
-      Serial.println("[buttons] BOOT held long, restarting");
-      ui_toast("RESTARTING");
-      delay(400);
-      ESP.restart();
-      break;
-    default:
-      break;
-  }
-}
-
-}  // namespace
+//   PWR    press        a day back through the data           -> step_day(-1)
+//          hold 2 s     auto-cycle on or off                  -> ui_set_rotate_enabled()
+//          hold 5 s     power off                              -> power_shutdown()
+//   BOOT   press        a day forward, no further than today   -> step_day(1)
+//          hold 2 s     next screen                            -> ui_next_screen()
+//          hold 5 s     restart                                 -> ESP.restart()
+//
+// Swiping between screens is untouched — that's read straight from the touch
+// driver's LVGL indev, not from here.
+//
+// If you want these back, the natural touch-based homes are:
+//   - day back/forward: already has a UI concept (ui_set_day_offset()) that
+//     just needs a control — e.g. two small arrows on the day screen.
+//   - auto-cycle toggle: a switch on the Settings screen (settings.cpp
+//     already persists rotate_enabled via NVS).
+//   - next screen: already reachable by swiping; the only loss is the
+//     "without looking" one-tap version.
+//   - restart / power off: the settings web page can carry these instead —
+//     "Restart Device" as a POST endpoint next to the other settings
+//     actions is a small addition, and doesn't need touch or a gesture at
+//     all. "Power off" only meant something with a PMIC to cut the rails
+//     (see device/power.cpp) — on this board there's nothing for it to do
+//     beyond blanking the screen and ignoring input, so it's worth deciding
+//     whether that's still a feature you want before wiring it back up.
+//
+// None of that is implemented here — it's a product decision, not a
+// hardware-bringup one, so it's left for you rather than guessed at.
 
 void buttons_begin() {
-  // Active low, with the internal pull-up: the button pulls GPIO0 to ground.
-  pinMode(PUCK_BUTTON_BOOT, INPUT_PULLUP);
-  Serial.println("[buttons] PWR: day back / hold 2s auto-cycle / hold 5s off");
-  Serial.println("[buttons] BOOT: day forward / hold 2s next screen / hold 5s restart");
+  Serial.println("[buttons] no physical buttons on this board — stubbed out");
 }
 
 void buttons_loop() {
-  const uint32_t now = millis();
-
-  const ButtonGesture boot = s_boot.update(digitalRead(PUCK_BUTTON_BOOT) == LOW, now);
-  if (boot != ButtonGesture::None) {
-    // Any button counts as activity, so a press wakes a dimmed screen and holds
-    // the auto-cycle off — the same treatment a touch gets.
-    lv_disp_trig_activity(nullptr);
-    if (!wake_if_asleep()) {
-      handle_boot(boot);
-    }
-  }
-
-  const ButtonGesture pwr = s_pwr.update(power_key_down(), now);
-  if (pwr != ButtonGesture::None) {
-    lv_disp_trig_activity(nullptr);
-    if (!wake_if_asleep()) {
-      handle_pwr(pwr);
-    }
-  }
+  // Nothing to poll.
 }

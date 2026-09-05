@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+CONTAINER_ENGINE="${CONTAINER_ENGINE:-$(scripts/container)}"
+
+echo "==> Building SigenStorPuck firmware..."
+
+"${CONTAINER_ENGINE}" compose run --rm dev \
+    pio run -e guition
+
+echo
+echo "==> Firmware build complete."
+echo
+echo "Output:"
+echo "    .pio/build/puck/"

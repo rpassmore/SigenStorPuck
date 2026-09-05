@@ -6,55 +6,70 @@
 
 #include "board_config.h"
 
+// Minimal ST7701 init sequence for this panel: MADCTL, Sleep Out, Display On.
+// Deliberately not the long register-dump tables some ST7701 boards need —
+// this board's panel comes from the factory with its gamma/timing already in
+// OTP, and a confirmed working config for this exact board (Guition
+// ESP32-S3-4848S040, forum.arduino.cc "ESP32S3 and what GFX library?") uses
+// exactly this minimal sequence rather than a full table. If the screen
+// stays blank, garbled, or shows a memory-error boot loop, that thread is the
+// first place to check — it documents both this fix and the failure mode it
+// replaces.
+static const uint8_t kSt7701Init[] = {
+    BEGIN_WRITE,
+    WRITE_COMMAND_8, 0x36, WRITE_BYTES, 1, 0x08,  // MADCTL — flip bit 0x08 if colours/mirroring are wrong
+    WRITE_COMMAND_8, 0x11,                        // Sleep Out
+    END_WRITE,
+    DELAY, 120,
+    BEGIN_WRITE,
+    WRITE_COMMAND_8, 0x29,                        // Display On
+    END_WRITE,
+    DELAY, 50,
+};
+
 namespace {
 
 Arduino_DataBus* s_bus = nullptr;
+Arduino_ESP32RGBPanel* s_rgbpanel = nullptr;
 
-// Typed as the concrete panel, not the Arduino_GFX base: setBrightness() only
-// exists on the OLED subclass, and this board has no other way to dim.
-Arduino_CO5300* s_panel = nullptr;
+// Typed as the concrete class rather than the Arduino_GFX base for the same
+// reason the old code did: nothing display-specific this file needs is on
+// the base class. Here that's draw16bitRGBBitmap(), which is on the base —
+// kept concrete anyway so a future addition (e.g. displayOn/Off) is visible.
+Arduino_RGB_Display* s_panel = nullptr;
 
 lv_disp_draw_buf_t s_draw_buf;
 lv_disp_drv_t s_disp_drv;
 lv_color_t* s_pixels = nullptr;
 bool s_buffer_is_internal = false;
 bool s_asleep = false;
+uint8_t s_brightness_before_sleep = PUCK_LCD_BRIGHTNESS;
+uint8_t s_current_brightness = PUCK_LCD_BRIGHTNESS;
 
-// Rotation is done here, on the way to the panel, rather than by LVGL's sw_rotate.
-// sw_rotate rotates each rendered fragment but leaves the area rectangle
-// describing the unrotated one, so a partial buffer feeds the panel a block of
-// h x w against a rect of w x h — every row walks sideways and the screen shears
-// diagonally. Transforming in the flush keeps the 40-line buffer, needs no
-// full_refresh, and touches nothing in the boot path.
+// --- Everything below this line is carried over unchanged from the CO5300
+// backend. It rotates in software because LVGL's own sw_rotate needs
+// full_refresh at 90/270, and a full-frame + full_refresh buffer previously
+// failed to boot at all on this codebase's LVGL 8.4 pin. That risk is a
+// property of LVGL's rotate path, not of the CO5300 specifically, so the
+// same workaround is kept here rather than re-tested blind on new hardware.
+// The one thing that *was* CO5300-specific — the even/odd write-window
+// rounding, needed because that panel only accepted aligned QSPI windows —
+// is removed below: this panel is a continuously-scanned framebuffer, so
+// every pixel address is independently writable and no rounding is needed.
+
 uint8_t s_rotation = 0;
 lv_color_t* s_rotated = nullptr;
-
-// The CO5300 only accepts even-aligned write windows. LVGL is happy to hand us
-// odd areas, and the panel then renders them offset and torn, so widen every
-// invalidated area to an even start and an odd end.
-//
-// This is safe with a partial buffer: LVGL's get_max_row() re-applies this
-// callback when it splits an area into buffer-sized chunks, and shrinks the
-// chunk height until the rounded result still fits.
-void rounder_cb(lv_disp_drv_t* /*drv*/, lv_area_t* area) {
-  area->x1 &= ~1;
-  area->y1 &= ~1;
-  area->x2 |= 1;
-  area->y2 |= 1;
-}
 
 void flush_cb(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* pixels) {
   const int32_t w = area->x2 - area->x1 + 1;
   const int32_t h = area->y2 - area->y1 + 1;
 
-  // Unrotated is the untouched fast path: straight out of the DMA-capable buffer.
   if (s_rotation == 0 || s_rotated == nullptr) {
     s_panel->draw16bitRGBBitmap(area->x1, area->y1, reinterpret_cast<uint16_t*>(pixels), w, h);
     lv_disp_flush_ready(drv);
     return;
   }
 
-  // A quarter turn swaps the block's dimensions; a half turn does not.
   const bool quarter = s_rotation == 1 || s_rotation == 3;
   const int32_t dst_w = quarter ? h : w;
 
@@ -81,8 +96,6 @@ void flush_cb(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* pixels) {
     }
   }
 
-  // Where that block lands on the physical panel. Even/odd alignment survives the
-  // transform, so the 2-pixel rounding the CO5300 needs still holds.
   int32_t px = 0;
   int32_t py = 0;
   switch (s_rotation) {
@@ -108,36 +121,55 @@ void flush_cb(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* pixels) {
 }  // namespace
 
 bool display_begin(uint8_t rotation) {
-  s_bus = new Arduino_ESP32QSPI(PUCK_LCD_CS, PUCK_LCD_SCLK, PUCK_LCD_D0, PUCK_LCD_D1,
-                                PUCK_LCD_D2, PUCK_LCD_D3);
-  // Always 0 here. The CO5300's own rotation parameter drives MADCTL bits that
-  // this panel interprets as an axis flip, so asking it for 90 degrees mirrors the
-  // image instead of turning it. Waveshare's own LVGL example does not use it
-  // either — it rotates in software, which is what happens below.
-  s_panel = new Arduino_CO5300(s_bus, PUCK_LCD_RST, 0, PUCK_LCD_WIDTH,
-                               PUCK_LCD_HEIGHT, PUCK_LCD_COL_OFFSET, PUCK_LCD_ROW_OFFSET, 0, 0);
+  s_bus = new Arduino_SWSPI(GFX_NOT_DEFINED /* DC */, PUCK_LCD_CS, PUCK_LCD_SCLK, PUCK_LCD_SDA,
+                            GFX_NOT_DEFINED /* MISO */);
 
-  if (!s_panel->begin(PUCK_LCD_QSPI_HZ)) {
-    Serial.println("[display] CO5300 begin() failed");
+  s_rgbpanel = new Arduino_ESP32RGBPanel(
+      PUCK_LCD_DE, PUCK_LCD_VSYNC, PUCK_LCD_HSYNC, PUCK_LCD_PCLK,
+      PUCK_LCD_R0, PUCK_LCD_R1, PUCK_LCD_R2, PUCK_LCD_R3, PUCK_LCD_R4,
+      PUCK_LCD_G0, PUCK_LCD_G1, PUCK_LCD_G2, PUCK_LCD_G3, PUCK_LCD_G4, PUCK_LCD_G5,
+      PUCK_LCD_B0, PUCK_LCD_B1, PUCK_LCD_B2, PUCK_LCD_B3, PUCK_LCD_B4,
+      PUCK_LCD_HSYNC_POLARITY, PUCK_LCD_HSYNC_FRONT_PORCH, PUCK_LCD_HSYNC_PULSE_WIDTH,
+      PUCK_LCD_HSYNC_BACK_PORCH,
+      PUCK_LCD_VSYNC_POLARITY, PUCK_LCD_VSYNC_FRONT_PORCH, PUCK_LCD_VSYNC_PULSE_WIDTH,
+      PUCK_LCD_VSYNC_BACK_PORCH);
+  // PUCK_LCD_PCLK_HZ is not passed here: the verified working constructor call
+  // this is based on (moononournation/Arduino_GFX#465, same board) doesn't
+  // take an explicit pixel-clock argument at this GFX library version, so the
+  // library's own default applies. If the image tears or won't sync, check
+  // whether your installed GFX Library for Arduino version added a trailing
+  // speed_hz parameter to Arduino_ESP32RGBPanel's constructor and wire
+  // PUCK_LCD_PCLK_HZ through to it.
+
+  // Rotation is always 0 here, same reasoning as the old board: rotate in the
+  // flush callback below, not through the panel/library, so it composes with
+  // the same LVGL rotated-touch-coordinate trick main.cpp already relies on.
+  // PUCK_LCD_ROTATION is deliberately not passed here — it's the input to
+  // display_begin()'s software rotation below, same as PUCK_LCD_ROTATION was
+  // read by main.cpp/settings on the old board, not something the panel
+  // itself should also apply.
+  s_panel = new Arduino_RGB_Display(
+      PUCK_LCD_WIDTH, PUCK_LCD_HEIGHT, s_rgbpanel, 0 /* rotation */, true /* auto_flush */,
+      s_bus, PUCK_LCD_RST, kSt7701Init, sizeof(kSt7701Init));
+
+  if (!s_panel->begin()) {
+    Serial.println("[display] ST7701 begin() failed");
     return false;
   }
   s_panel->fillScreen(RGB565_BLACK);
-  s_panel->setBrightness(PUCK_LCD_BRIGHTNESS);
 
-  // A 40-line slice, always. Reverted from a full-frame + full_refresh buffer for
-  // rotated displays: that combination stopped the device booting at all — it
-  // panicked before USB-CDC could enumerate, so it could not even be diagnosed
-  // without a download-mode recovery. LVGL 8's sw_rotate appears to want a second
-  // buffer to rotate into when full_refresh is set, which this did not provide.
-  //
-  // So rotated output is mildly garbled again rather than dead. That is the better
-  // failure of the two, and the real fix belongs with rotating in the flush
-  // callback, which keeps partial buffers and needs no full_refresh at all.
+  pinMode(PUCK_LCD_BL, OUTPUT);
+  ledcAttach(PUCK_LCD_BL, 5000 /* Hz */, 8 /* bits */);
+  ledcWrite(PUCK_LCD_BL, PUCK_LCD_BRIGHTNESS);
+  s_current_brightness = PUCK_LCD_BRIGHTNESS;
+
   const size_t pixel_count = static_cast<size_t>(PUCK_LCD_WIDTH) * PUCK_LVGL_BUFFER_LINES;
   const size_t bytes = pixel_count * sizeof(lv_color_t);
 
-  // DMA-capable internal RAM matters for QSPI throughput; PSRAM works but the
-  // frame rate drops noticeably, so log which one we got.
+  // Same DMA-then-PSRAM fallback as before. Less critical here than it was for
+  // QSPI throughput — this buffer is memcpy'd into the RGB panel's own
+  // PSRAM framebuffer rather than DMA'd straight to the bus — but internal
+  // RAM is still faster to write to, so keep trying it first.
   s_pixels = static_cast<lv_color_t*>(heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA));
   s_buffer_is_internal = s_pixels != nullptr;
   if (s_pixels == nullptr) {
@@ -151,20 +183,16 @@ bool display_begin(uint8_t rotation) {
 
   s_rotation = rotation & 0x03;
   if (s_rotation != 0) {
-    // Somewhere to rotate each block into. Same size as the draw buffer, and only
-    // allocated when it is actually needed.
     s_rotated = static_cast<lv_color_t*>(heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL));
     if (s_rotated == nullptr) {
       s_rotated = static_cast<lv_color_t*>(heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM));
     }
     if (s_rotated == nullptr) {
-      // Better to run unrotated than not at all.
       Serial.println("[display] no room for a rotation buffer, staying at 0");
       s_rotation = 0;
     }
   }
 
-  // Single-buffered partial rendering.
   lv_disp_draw_buf_init(&s_draw_buf, s_pixels, nullptr, pixel_count);
 
   lv_disp_drv_init(&s_disp_drv);
@@ -172,18 +200,7 @@ bool display_begin(uint8_t rotation) {
   s_disp_drv.ver_res = PUCK_LCD_HEIGHT;
   s_disp_drv.draw_buf = &s_draw_buf;
   s_disp_drv.flush_cb = flush_cb;
-  s_disp_drv.rounder_cb = rounder_cb;
-  // sw_rotate stays off: flush_cb does the rotation. `rotated` is still set,
-  // because LVGL uses it to rotate touch coordinates (lv_indev.c) — exactly the
-  // half we want from it.
-  //
-  // Note 90 and 270 are deliberately swapped here, and this is not a typo.
-  // flush_cb maps an LVGL point to a panel point with some transform R. A physical
-  // touch needs the inverse, R-inverse, to get back to LVGL space — but LVGL
-  // applies R. At 0 and 180 R is its own inverse so it happens to be right; at 90
-  // and 270 it is not, and swipes came out reversed. R-inverse(90) is R(270), so
-  // handing LVGL the opposite quarter turn is what makes touch agree with what is
-  // on the glass. Verified against lv_indev.c for every rotation.
+  // No rounder_cb: that was purely a CO5300 QSPI-window constraint.
   s_disp_drv.sw_rotate = 0;
   s_disp_drv.rotated = s_rotation == 1   ? LV_DISP_ROT_270
                        : s_rotation == 2 ? LV_DISP_ROT_180
@@ -193,7 +210,7 @@ bool display_begin(uint8_t rotation) {
 
   Serial.printf("[display] rotation %u%s\n", static_cast<unsigned>(s_rotation),
                 s_rotation != 0 ? " (rotated in flush)" : "");
-  Serial.printf("[display] CO5300 %dx%d up, %u-byte buffer (%u lines) in %s\n", PUCK_LCD_WIDTH,
+  Serial.printf("[display] ST7701 %dx%d up, %u-byte buffer (%u lines) in %s\n", PUCK_LCD_WIDTH,
                 PUCK_LCD_HEIGHT, static_cast<unsigned>(bytes),
                 static_cast<unsigned>(PUCK_LVGL_BUFFER_LINES),
                 s_buffer_is_internal ? "internal DMA RAM" : "PSRAM");
@@ -201,23 +218,31 @@ bool display_begin(uint8_t rotation) {
 }
 
 void display_set_brightness(uint8_t level) {
-  if (s_panel != nullptr) {
-    s_panel->setBrightness(level);
+  s_current_brightness = level;
+  if (!s_asleep) {
+    ledcWrite(PUCK_LCD_BL, level);
   }
 }
 
 void display_set_sleep(bool asleep) {
-  if (s_panel == nullptr || asleep == s_asleep) {
+  if (asleep == s_asleep) {
     return;
   }
   s_asleep = asleep;
   if (asleep) {
-    s_panel->displayOff();
+    // Backlight off rather than any panel-level sleep command: this panel's
+    // RGB timing generator keeps scanning out whatever is in its framebuffer
+    // regardless, and stopping/restarting that scan cleanly is exactly the
+    // kind of thing that varies by ST7701 clone and by GFX library version.
+    // Cutting the backlight is simple, has no failure mode worse than "screen
+    // stays dark", and is visually identical to the old board's sleep.
+    s_brightness_before_sleep = s_current_brightness;
+    ledcWrite(PUCK_LCD_BL, 0);
   } else {
-    s_panel->displayOn();
-    // Panel RAM holds nothing meaningful after a sleep, and LVGL believes the
-    // screen still shows whatever it last flushed — so without this the display
-    // comes back as noise and stays that way until something happens to change.
+    ledcWrite(PUCK_LCD_BL, s_brightness_before_sleep);
+    // The framebuffer never lost its content (no true panel sleep happened),
+    // so this invalidate is likely unnecessary here — kept anyway since it's
+    // harmless and matches the old board's belt-and-braces behaviour.
     lv_obj_invalidate(lv_scr_act());
   }
   Serial.printf("[display] panel %s\n", asleep ? "asleep" : "awake");

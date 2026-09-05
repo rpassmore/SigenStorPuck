@@ -1,0 +1,40 @@
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: Containerfile
+      args:
+        USER_UID: ${HOST_UID:-1000}
+        USER_GID: ${HOST_GID:-1000}
+
+    image: localhost/sigenstorpuck-dev
+
+    userns_mode: keep-id
+
+    # Allow access to host desktop IPC such as the Wayland socket.
+    security_opt:
+      - label=disable
+
+    working_dir: /workspace
+
+    volumes:
+      - .:/workspace:Z
+      - platformio-data:/home/vscode/.platformio:Z,U
+      - ${XDG_RUNTIME_DIR}/${WAYLAND_DISPLAY}:/tmp/wayland-display
+
+    environment:
+      HOME: /home/vscode
+      PLATFORMIO_CORE_DIR: /home/vscode/.platformio
+
+      XDG_RUNTIME_DIR: /tmp
+      WAYLAND_DISPLAY: wayland-display
+      SDL_VIDEODRIVER: wayland
+
+    stdin_open: true
+    tty: true
+    
+    devices:
+      - "${HOST_DEVICE:-/dev/null}:${HOST_DEVICE}"
+
+volumes:
+  platformio-data:

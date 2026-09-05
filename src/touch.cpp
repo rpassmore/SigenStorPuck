@@ -2,14 +2,23 @@
 
 #include <Arduino.h>
 #include <math.h>
-#include <TouchDrv.hpp>
 #include <Wire.h>
 
 #include "board_config.h"
 
+// GT911, read directly over I2C rather than through a library — it's a small
+// enough protocol that this matches how touch_scan_i2c() already talks to the
+// bus by hand, and it avoids pulling in a new dependency for one register
+// read. 16-bit register addresses, MSB first; a status byte at 0x814E with a
+// "new data" flag in bit 7 and a point count in the low nibble, then up to
+// five 8-byte point records from 0x8150. Standard and stable across GT911
+// clones; this needs no per-vendor config-table upload to read touch points.
 namespace {
 
-TouchDrvCST92xx s_touch;
+constexpr uint16_t GT911_REG_STATUS = 0x814E;
+constexpr uint16_t GT911_REG_POINT0 = 0x8150;
+constexpr uint16_t GT911_REG_PRODUCT_ID = 0x8140;
+
 uint8_t s_address = 0;
 
 lv_indev_drv_t s_indev_drv;
@@ -25,22 +34,9 @@ bool s_fine_active = false;
 const char* i2c_device_name(uint8_t address) {
   switch (address) {
     case PUCK_TOUCH_ADDR_PRIMARY:
-      return "CST9217 touch";
+      return "GT911 touch";
     case PUCK_TOUCH_ADDR_ALT:
-      return "CST9217 touch (alternate address)";
-    case PUCK_I2C_ADDR_ES8311:
-      return "ES8311 audio codec";
-    case PUCK_I2C_ADDR_TCA9554:
-      return "TCA9554 I/O expander";
-    case PUCK_I2C_ADDR_AXP2101:
-      return "AXP2101 PMIC";
-    case PUCK_I2C_ADDR_LC76G_GPS:
-      return "LC76G GPS";
-    case PUCK_I2C_ADDR_PCF85063:
-      return "PCF85063 RTC";
-    case PUCK_I2C_ADDR_QMI8658_L:
-    case PUCK_I2C_ADDR_QMI8658_H:
-      return "QMI8658 IMU";
+      return "GT911 touch (alternate address)";
     default:
       return "unrecognised";
   }
@@ -51,45 +47,101 @@ bool i2c_responds(uint8_t address) {
   return Wire.endTransmission() == 0;
 }
 
-// The controller holds its I2C lines idle until reset is released, so a scan run
-// before this reports no touch device at all. Idempotent: touch_begin() resets
-// the part again through SensorLib.
+bool gt911_write_reg(uint8_t address, uint16_t reg, uint8_t value) {
+  Wire.beginTransmission(address);
+  Wire.write(static_cast<uint8_t>(reg >> 8));
+  Wire.write(static_cast<uint8_t>(reg & 0xFF));
+  Wire.write(value);
+  return Wire.endTransmission() == 0;
+}
+
+// Returns bytes actually read, or -1 on an I2C error.
+int gt911_read_regs(uint8_t address, uint16_t reg, uint8_t* buf, size_t len) {
+  Wire.beginTransmission(address);
+  Wire.write(static_cast<uint8_t>(reg >> 8));
+  Wire.write(static_cast<uint8_t>(reg & 0xFF));
+  if (Wire.endTransmission(false) != 0) {
+    return -1;
+  }
+  const size_t got = Wire.requestFrom(static_cast<int>(address), static_cast<int>(len));
+  for (size_t i = 0; i < got && i < len; ++i) {
+    buf[i] = Wire.read();
+  }
+  return static_cast<int>(got);
+}
+
+// RST/INT are not broken out on this board (PUCK_TOUCH_RST/INT are -1), so
+// there is no reset pulse to issue and no address-select strapping to drive —
+// the chip is already running whatever address it latched at its own
+// power-on. If your board does expose these pins, add the pulse here the way
+// the old ensure_reset_released() did, driving INT to select 0x5D vs 0x14
+// during the reset window per the GT911 datasheet.
+//
+// A plain runtime check rather than #ifdef: PUCK_TOUCH_RST is a typed
+// constexpr in board_config.h (matching the rest of that file), not a
+// preprocessor macro, so `#if defined(PUCK_TOUCH_RST)` would silently never
+// be true regardless of its value. The compiler drops this branch entirely
+// when the constant folds to false, so there's no runtime cost either way.
 void ensure_reset_released() {
+  if (PUCK_TOUCH_RST < 0) {
+    return;
+  }
   static bool done = false;
   if (done) {
     return;
   }
   pinMode(PUCK_TOUCH_RST, OUTPUT);
   digitalWrite(PUCK_TOUCH_RST, LOW);
-  delay(30);
+  delay(10);
   digitalWrite(PUCK_TOUCH_RST, HIGH);
   delay(50);
   done = true;
 }
 
-// Note on a log line you will see here: on every finger-lift SensorLib prints
-//   [E] getPoint(): Invalid touch point index: 0
-// That is upstream, not us. TouchDrvCST92xx::getTouchPoints() calls
-// getPoint(0) unconditionally after its parse loop, but a release report
-// carries event 0x00 rather than 0x06 so nothing was added to the set. It
-// logs, returns an empty set, and the behaviour is correct. Harmless.
+bool gt911_read_point(uint16_t* x, uint16_t* y) {
+  uint8_t status = 0;
+  if (gt911_read_regs(s_address, GT911_REG_STATUS, &status, 1) != 1) {
+    return false;
+  }
+  if (!(status & 0x80)) {
+    // No new buffer since the last read — not an error, just nothing to report.
+    return false;
+  }
+
+  const uint8_t count = status & 0x0F;
+  bool have_point = false;
+  if (count >= 1 && count <= 5) {
+    uint8_t point[7];
+    if (gt911_read_regs(s_address, GT911_REG_POINT0, point, sizeof(point)) == sizeof(point)) {
+      *x = static_cast<uint16_t>(point[1] | (point[2] << 8));
+      *y = static_cast<uint16_t>(point[3] | (point[4] << 8));
+      have_point = true;
+    }
+  }
+
+  // Must be acknowledged or the chip never posts another update.
+  gt911_write_reg(s_address, GT911_REG_STATUS, 0x00);
+  return have_point;
+}
+
+// Note on rotation/mirroring: the CST9217 on the old board was known, on that
+// hardware, to be mounted 180 degrees round from the panel's scan order,
+// which is why the old code unconditionally flipped both axes below. That
+// was a fact about how that specific touch sensor was bonded to that
+// specific glass — it does not necessarily hold for this board's GT911.
+// VERIFY ON HARDWARE: touch a corner and see which reported coordinate
+// lights up. If it's the opposite corner, the flip below is still needed;
+// if it's the right corner, remove the "WIDTH - 1 -" / "HEIGHT - 1 -" and
+// pass x/y straight through.
 void indev_read_cb(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
-  const TouchPoints& points = s_touch.getTouchPoints();
-  if (points.hasPoints()) {
-    const TouchPoint& point = points.getPoint(0);
+  uint16_t raw_x = 0;
+  uint16_t raw_y = 0;
+  if (gt911_read_point(&raw_x, &raw_y)) {
+    lv_coord_t x = PUCK_LCD_WIDTH - 1 - static_cast<lv_coord_t>(raw_x);
+    lv_coord_t y = PUCK_LCD_HEIGHT - 1 - static_cast<lv_coord_t>(raw_y);
 
-    // The touch layer is mounted 180 degrees round from the panel's scan order,
-    // so start by undoing that; this reproduces the setMirrorXY(true, true) that
-    // was verified on hardware at rotation 0.
-    // Only the mounting correction belongs here. LVGL rotates pointer coordinates
-    // itself from disp->driver->rotated (lv_indev.c), so applying the display
-    // rotation here as well turned every swipe the wrong way.
-    lv_coord_t x = PUCK_LCD_WIDTH - 1 - static_cast<lv_coord_t>(point.x);
-    lv_coord_t y = PUCK_LCD_HEIGHT - 1 - static_cast<lv_coord_t>(point.y);
-
-    // Undo the fine rotation about the centre of the panel. Rotations about the
-    // same point commute, so it does not matter that LVGL applies its own quarter
-    // turn after this.
+    // Undo the fine rotation about the centre of the panel, same as before —
+    // this math has nothing to do with which touch chip is underneath.
     if (s_fine_active) {
       const float cx = PUCK_LCD_WIDTH / 2.0f;
       const float cy = PUCK_LCD_HEIGHT / 2.0f;
@@ -99,7 +151,6 @@ void indev_read_cb(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
       y = static_cast<lv_coord_t>(lroundf(cy + ox * s_fine_sin + oy * s_fine_cos));
     }
 
-
     s_last_point.x = x;
     s_last_point.y = y;
     s_pressed = true;
@@ -107,7 +158,6 @@ void indev_read_cb(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
     s_pressed = false;
   }
 
-  // LVGL wants the last known position on release too, not a jump to 0,0.
   data->point = s_last_point;
   data->state = s_pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
 }
@@ -135,41 +185,34 @@ bool touch_begin() {
   ensure_reset_released();
 
   const uint8_t candidates[] = {PUCK_TOUCH_ADDR_PRIMARY, PUCK_TOUCH_ADDR_ALT};
-  s_touch.setPins(PUCK_TOUCH_RST, PUCK_TOUCH_INT);
-
   for (uint8_t address : candidates) {
     if (!i2c_responds(address)) {
       continue;
     }
-    // No pins passed: main() already called Wire.begin(), and handing SensorLib
-    // the pins again makes it call Wire.setPins() on a live bus, which logs an
-    // error and changes nothing.
-    if (!s_touch.begin(Wire, address)) {
-      Serial.printf("[touch] 0x%02X answered the bus but would not initialise\n", address);
+    uint8_t product_id[4] = {};
+    if (gt911_read_regs(address, GT911_REG_PRODUCT_ID, product_id, sizeof(product_id)) !=
+        sizeof(product_id)) {
+      Serial.printf("[touch] 0x%02X answered the bus but would not answer a register read\n",
+                    address);
       continue;
     }
     s_address = address;
+    Serial.printf("[touch] GT911 (id \"%c%c%c%c\") at 0x%02X, rotation %u\n", product_id[0],
+                  product_id[1], product_id[2], product_id[3], s_address,
+                  static_cast<unsigned>(s_rotation));
     break;
   }
 
   if (s_address == 0) {
-    Serial.println("[touch] no CST9217 found at 0x5A or 0x15 — display only");
+    Serial.println("[touch] no GT911 found at 0x5D or 0x14 — display only");
     return false;
   }
-
-  s_touch.setMaxCoordinates(PUCK_LCD_WIDTH, PUCK_LCD_HEIGHT);
-  // Mirroring is applied here rather than in the library, because it has to
-  // compose with the display rotation and the library only knows about itself.
-  s_touch.setMirrorXY(false, false);
 
   lv_indev_drv_init(&s_indev_drv);
   s_indev_drv.type = LV_INDEV_TYPE_POINTER;
   s_indev_drv.read_cb = indev_read_cb;
   lv_indev_drv_register(&s_indev_drv);
 
-  Serial.printf("[touch] %s at 0x%02X, %u points, rotation %u\n", s_touch.getModelName(),
-                s_address, static_cast<unsigned>(s_touch.getSupportTouchPoint()),
-                static_cast<unsigned>(s_rotation));
   return true;
 }
 
