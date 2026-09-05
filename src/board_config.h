@@ -77,7 +77,7 @@ static constexpr uint8_t PUCK_LCD_VSYNC_POLARITY = 1;
 static constexpr uint16_t PUCK_LCD_VSYNC_FRONT_PORCH = 10;
 static constexpr uint16_t PUCK_LCD_VSYNC_PULSE_WIDTH = 8;
 static constexpr uint16_t PUCK_LCD_VSYNC_BACK_PORCH = 20;
-static constexpr int32_t PUCK_LCD_PCLK_HZ = 12000000;
+static constexpr int32_t PUCK_LCD_PCLK_HZ = 12000; //@@RP new value from taken from https://github.com/aquaElectronics/esp32-4848s040-st7701/blob/ae56da31c9d7f9a0b7354cb4b66bccaf40262691/src/display.cpp#L132 12000000;
 
 // Software rotation applied in display.cpp's flush callback, same mechanism
 // and same reasoning as the old board (see display.cpp) — kept as a named

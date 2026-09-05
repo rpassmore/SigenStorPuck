@@ -117,17 +117,17 @@ void sweep_finished(lv_anim_t* /*anim*/) {
 // any instant — flashing the whole screen would even out wear by adding a great
 // deal more of it.
 void run_sweep() {
-  lv_obj_clear_flag(s_sweep, LV_OBJ_FLAG_HIDDEN);
-  lv_anim_t anim;
-  lv_anim_init(&anim);
-  lv_anim_set_var(&anim, s_sweep);
-  lv_anim_set_exec_cb(&anim, [](void* target, int32_t value) {
-    lv_obj_set_x(static_cast<lv_obj_t*>(target), value);
-  });
-  lv_anim_set_values(&anim, -PUCK_SWEEP_BAND_PX, PUCK_LCD_WIDTH);
-  lv_anim_set_time(&anim, PUCK_SWEEP_DURATION_MS);
-  lv_anim_set_ready_cb(&anim, sweep_finished);
-  lv_anim_start(&anim);
+  // lv_obj_clear_flag(s_sweep, LV_OBJ_FLAG_HIDDEN);
+  // lv_anim_t anim;
+  // lv_anim_init(&anim);
+  // lv_anim_set_var(&anim, s_sweep);
+  // lv_anim_set_exec_cb(&anim, [](void* target, int32_t value) {
+  //   lv_obj_set_x(static_cast<lv_obj_t*>(target), value);
+  // });
+  // lv_anim_set_values(&anim, -PUCK_SWEEP_BAND_PX, PUCK_LCD_WIDTH);
+  // lv_anim_set_time(&anim, PUCK_SWEEP_DURATION_MS);
+  // lv_anim_set_ready_cb(&anim, sweep_finished);
+  // lv_anim_start(&anim);
 }
 
 // Screen rotation and the sweep, both deferred while someone is using the device:

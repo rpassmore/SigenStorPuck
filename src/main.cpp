@@ -362,8 +362,8 @@ void loop() {
     refresh_device_battery();
   }
 
-  apply_idle_dim();
-  apply_screen_schedule();
+  // apply_idle_dim();
+  // apply_screen_schedule();
   lv_timer_handler();
   delay(5);
 }

@@ -72,7 +72,7 @@ struct Settings {
   ModbusDevice modbus_devices[SETTINGS_MAX_MODBUS_DEVICES];
 
   uint32_t poll_interval_s = 5;
-  uint8_t brightness = 120;
+  uint8_t brightness = 255;
   // Dimmed rather than switched off: a status display you have to wake to read is
   // a worse status display. 0 disables dimming entirely.
   uint32_t dim_after_s = 30;
