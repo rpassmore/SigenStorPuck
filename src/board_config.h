@@ -19,7 +19,9 @@
 
 // -------------------------------------------------------- profile selection ---
 
-#if defined(PUCK_BOARD_2P41)
+#if defined(PUCK_BOARD_GUITION)
+#  include "board_guition.h"
+#elif defined(PUCK_BOARD_2P41)
 #  include "board_2p41.h"  // Waveshare ESP32-S3-Touch-AMOLED-2.41 (600x450)
 #else
 #  include "board_1p75.h"  // Waveshare ESP32-S3-Touch-AMOLED-1.75 (466x466) — default

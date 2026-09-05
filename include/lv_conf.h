@@ -16,8 +16,8 @@
 
 // ---------------------------------------------------------------- colour ----
 
-// RGB565. The CO5300 is fed by draw16bitRGBBitmap(), which wants native byte
-// order, so no byte swap.
+// RGB565. draw16bitRGBBitmap() (used by every Arduino_GFX panel, CO5300 or
+// this board's ST7701) wants native byte order, so no byte swap.
 #define LV_COLOR_DEPTH 16
 #define LV_COLOR_16_SWAP 0
 
@@ -66,15 +66,21 @@
 #define LV_TICK_CUSTOM_SYS_TIME_EXPR (SDL_GetTicks())
 #endif
 
-// ~60 Hz. The panel and QSPI bus can sustain it.
+// ~60 Hz. The RGB panel is continuously scanned at its own pixel clock
+// regardless (see PUCK_LCD_PCLK_HZ in board_config.h) — this just paces how
+// often LVGL re-renders into the draw buffer LVGL owns.
 #define LV_DISP_DEF_REFR_PERIOD 16
 #define LV_INDEV_DEF_READ_PERIOD 16
 
 // --------------------------------------------------------------- geometry ----
 
-// 466 px across roughly 1.75", so default padding and widget sizes scale about
-// right for a display held at arm's length.
-#define LV_DPI_DEF 130
+// Guition ESP32-4848S040: 480 px across a 4.3" panel, ~130 px my old 1.75"
+// board (466 px) target was tuned for the same DPI it had — this is now
+// closer to the physical ~130 px/in this board's own panel would want if it
+// weren't smaller. 480 px / 4.3 in comes out to roughly 112, which is what's
+// set below; nudge it if paddings/fonts read too airy or too tight compared
+// with how the screens were designed.
+#define LV_DPI_DEF 112
 
 // ----------------------------------------------------------------- fonts ----
 

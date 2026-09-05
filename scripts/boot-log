@@ -1,0 +1,20 @@
+HOST_DEVICE=/dev/ttyUSB0 podman compose run --rm dev python3 -c "
+import serial, time
+try:
+    s = serial.Serial('/dev/ttyUSB0', 115200, timeout=1)
+    print('Resetting ESP32-S3...')
+    s.dtr = False
+    s.rts = True
+    time.sleep(0.1)
+    s.rts = False
+    time.sleep(0.1)
+    print('Listening for boot log (10 seconds)...')
+    start = time.time()
+    while time.time() - start < 10:
+        line = s.readline()
+        if line:
+            print('BOOT LOG:', line.decode('utf-8', errors='replace').rstrip())
+    s.close()
+except Exception as e:
+    print('Error:', e)
+"

@@ -33,6 +33,7 @@ enum PuckScreen : uint8_t {
   // chart, plus live frequency and voltage. Swiped after load; see the order.
   // Built on both boards.
   PUCK_SCREEN_GRID,
+  PUCK_SCREEN_RATES,
   PUCK_SCREEN_COUNT,
 };
 
@@ -41,7 +42,8 @@ enum PuckScreen : uint8_t {
 // belongs at the end.
 static constexpr PuckScreen PUCK_SCREEN_ORDER[PUCK_SCREEN_COUNT] = {
     PUCK_SCREEN_POWER, PUCK_SCREEN_BATTERY, PUCK_SCREEN_SOLAR, PUCK_SCREEN_LOAD,
-    PUCK_SCREEN_GRID,  PUCK_SCREEN_FLOWS,   PUCK_SCREEN_COST,  PUCK_SCREEN_SETTINGS,
+    PUCK_SCREEN_RATES, PUCK_SCREEN_GRID,  PUCK_SCREEN_FLOWS,   PUCK_SCREEN_COST,  
+    PUCK_SCREEN_SETTINGS,
 };
 
 // Screens only the 2.41 landscape UI builds; the round ui.cpp masks these out of

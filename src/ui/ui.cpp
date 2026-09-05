@@ -13,6 +13,7 @@
 #include "screen_grid.h"
 #include "screen_load.h"
 #include "screen_power.h"
+#include "screen_rates.h"
 #include "screen_settings.h"
 #include "screen_solar.h"
 #include "theme.h"
@@ -382,6 +383,9 @@ lv_obj_t* ui_create(lv_obj_t* parent, const UiConfig& config) {
       case PUCK_SCREEN_COST:
         screen_cost_create(s_tiles[i]);
         break;
+      case PUCK_SCREEN_RATES:
+        screen_rates_create(s_tiles[i]);
+        break;  
       case PUCK_SCREEN_SETTINGS:
         screen_settings_create(s_tiles[i]);
         break;
@@ -554,6 +558,9 @@ void refresh_screens() {
       case PUCK_SCREEN_COST:
         screen_cost_update(day);
         break;
+      case PUCK_SCREEN_RATES:
+        screen_rates_update(day);
+        break;  
       default:
         break;
     }
