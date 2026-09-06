@@ -77,12 +77,21 @@ static constexpr uint8_t PUCK_LCD_VSYNC_POLARITY = 1;
 static constexpr uint16_t PUCK_LCD_VSYNC_FRONT_PORCH = 10;
 static constexpr uint16_t PUCK_LCD_VSYNC_PULSE_WIDTH = 8;
 static constexpr uint16_t PUCK_LCD_VSYNC_BACK_PORCH = 20;
-static constexpr int32_t PUCK_LCD_PCLK_HZ = 12000; //@@RP new value from taken from https://github.com/aquaElectronics/esp32-4848s040-st7701/blob/ae56da31c9d7f9a0b7354cb4b66bccaf40262691/src/display.cpp#L132 12000000;
+static constexpr int32_t PUCK_LCD_PCLK_HZ = 12000000;
 
 // Software rotation applied in display.cpp's flush callback, same mechanism
 // and same reasoning as the old board (see display.cpp) — kept as a named
 // constant here rather than hardcoded 0, same as before.
 static constexpr uint8_t PUCK_LCD_ROTATION = 0;
+
+// Which edge of PCLK the panel latches RGB data on. Discovered empirically:
+// a nonzero value here (inverting the clock) cleared up faint glitch lines
+// that were visible with this at 0 — the previous value, matching most
+// reference examples' default, was apparently wrong for this specific
+// panel/wiring. 1 rather than "true" since the real constructor parameter is
+// uint16_t, not bool, to match the confirmed signature in your installed
+// library's Arduino_ESP32RGBPanel.h.
+static constexpr uint16_t PUCK_LCD_PCLK_ACTIVE_NEG = 1;
 
 // Unlike the old board, this one *does* have a PWM backlight pin — the
 // CO5300's setBrightness() command doesn't exist here, so display.cpp drives
