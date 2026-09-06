@@ -352,7 +352,6 @@ void display_set_brightness(uint8_t level) {
   s_current_brightness = level;
   if (!s_asleep) {
     ledcWrite(PUCK_LCD_BL, level);
-    Serial.printf("[display] panel brightness set %d\n", level);
   }
 }
 
@@ -369,7 +368,7 @@ void display_set_sleep(bool asleep) {
     // Cutting the backlight is simple, has no failure mode worse than "screen
     // stays dark", and is visually identical to the old board's sleep.
     s_brightness_before_sleep = s_current_brightness;
-    // ledcWrite(PUCK_LCD_BL, 0);
+    ledcWrite(PUCK_LCD_BL, 0);
   } else {
     ledcWrite(PUCK_LCD_BL, s_brightness_before_sleep);
     // The framebuffer never lost its content (no true panel sleep happened),
