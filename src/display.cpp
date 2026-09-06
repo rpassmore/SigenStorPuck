@@ -6,25 +6,143 @@
 
 #include "board_config.h"
 
-// Minimal ST7701 init sequence for this panel: MADCTL, Sleep Out, Display On.
-// Deliberately not the long register-dump tables some ST7701 boards need —
-// this board's panel comes from the factory with its gamma/timing already in
-// OTP, and a confirmed working config for this exact board (Guition
-// ESP32-S3-4848S040, forum.arduino.cc "ESP32S3 and what GFX library?") uses
-// exactly this minimal sequence rather than a full table. If the screen
-// stays blank, garbled, or shows a memory-error boot loop, that thread is the
-// first place to check — it documents both this fix and the failure mode it
-// replaces.
+// Real, board-specific ST7701 init table. Sourced verbatim (not hand-typed)
+// from two independent repos that both explicitly target this exact board —
+// aquaElectronics/esp32-4848s040-st7701 ("PlatformIO demo for the GUITION
+// ESP32-4848S040... using Arduino_GFX") and sand1812/ESP32-4848S040, the
+// latter being the repo this whole migration was originally scoped against.
+// Both agree byte-for-byte, which is as much confidence as this gets without
+// a datasheet.
+//
+// Two corrections from my earlier attempt, now known wrong:
+//   - 0x3A (pixel format) is 0x60 (RGB666), not 0x50 (RGB565) as I'd changed
+//     it to. I'd reasoned that only 16 data lines being wired meant the panel
+//     should be told to expect 16-bit RGB565 — but both board-specific
+//     sources use 0x60, meaning this panel's 16 physical lines are wired
+//     MSB-aligned into its 18-bit RGB666 input (R[4:0]->R[5:1], with the LSB
+//     of each channel simply left unconnected) — a standard convention for
+//     this class of board that I didn't recognise. My "fix" was a mistake;
+//     sorry for the extra round trip chasing it.
+//   - 0xCD is 0x00 here, not the generic table's 0x08 — a deliberate,
+//     board-specific tuning both sources share.
+// Both sources also omit the display-inversion command (0x21, "IPS") that
+// the generic st7701_type1 table sends, and insert a 10ms delay before Sleep
+// Out instead — kept exactly as found rather than guessing at why.
 static const uint8_t kSt7701Init[] = {
     BEGIN_WRITE,
-    WRITE_COMMAND_8, 0x36, WRITE_BYTES, 1, 0x08,  // MADCTL — flip bit 0x08 if colours/mirroring are wrong
-    WRITE_COMMAND_8, 0x11,                        // Sleep Out
+    WRITE_COMMAND_8, 0xFF,
+    WRITE_BYTES, 5, 0x77, 0x01, 0x00, 0x00, 0x10,
+
+    WRITE_C8_D16, 0xC0, 0x3B, 0x00,
+    WRITE_C8_D16, 0xC1, 0x0D, 0x02,
+    WRITE_C8_D16, 0xC2, 0x31, 0x05,
+    WRITE_C8_D8, 0xCD, 0x00,  // board-specific; generic ST7701 tables use 0x08
+
+    WRITE_COMMAND_8, 0xB0,  // Positive Voltage Gamma Control
+    WRITE_BYTES, 16,
+    0x00, 0x11, 0x18, 0x0E,
+    0x11, 0x06, 0x07, 0x08,
+    0x07, 0x22, 0x04, 0x12,
+    0x0F, 0xAA, 0x31, 0x18,
+
+    WRITE_COMMAND_8, 0xB1,  // Negative Voltage Gamma Control
+    WRITE_BYTES, 16,
+    0x00, 0x11, 0x19, 0x0E,
+    0x12, 0x07, 0x08, 0x08,
+    0x08, 0x22, 0x04, 0x11,
+    0x11, 0xA9, 0x32, 0x18,
+
+    // PAGE1
+    WRITE_COMMAND_8, 0xFF,
+    WRITE_BYTES, 5, 0x77, 0x01, 0x00, 0x00, 0x11,
+
+    WRITE_C8_D8, 0xB0, 0x60,  // Vop=4.7375v
+    WRITE_C8_D8, 0xB1, 0x32,  // VCOM=32
+    WRITE_C8_D8, 0xB2, 0x07,  // VGH=15v
+    WRITE_C8_D8, 0xB3, 0x80,
+    WRITE_C8_D8, 0xB5, 0x49,  // VGL=-10.17v
+    WRITE_C8_D8, 0xB7, 0x85,
+    WRITE_C8_D8, 0xB8, 0x21,  // AVDD=6.6 & AVCL=-4.6
+    WRITE_C8_D8, 0xC1, 0x78,
+    WRITE_C8_D8, 0xC2, 0x78,
+
+    WRITE_COMMAND_8, 0xE0,
+    WRITE_BYTES, 3, 0x00, 0x1B, 0x02,
+
+    WRITE_COMMAND_8, 0xE1,
+    WRITE_BYTES, 11,
+    0x08, 0xA0, 0x00, 0x00,
+    0x07, 0xA0, 0x00, 0x00,
+    0x00, 0x44, 0x44,
+
+    WRITE_COMMAND_8, 0xE2,
+    WRITE_BYTES, 12,
+    0x11, 0x11, 0x44, 0x44,
+    0xED, 0xA0, 0x00, 0x00,
+    0xEC, 0xA0, 0x00, 0x00,
+
+    WRITE_COMMAND_8, 0xE3,
+    WRITE_BYTES, 4, 0x00, 0x00, 0x11, 0x11,
+
+    WRITE_C8_D16, 0xE4, 0x44, 0x44,
+
+    WRITE_COMMAND_8, 0xE5,
+    WRITE_BYTES, 16,
+    0x0A, 0xE9, 0xD8, 0xA0,
+    0x0C, 0xEB, 0xD8, 0xA0,
+    0x0E, 0xED, 0xD8, 0xA0,
+    0x10, 0xEF, 0xD8, 0xA0,
+
+    WRITE_COMMAND_8, 0xE6,
+    WRITE_BYTES, 4, 0x00, 0x00, 0x11, 0x11,
+
+    WRITE_C8_D16, 0xE7, 0x44, 0x44,
+
+    WRITE_COMMAND_8, 0xE8,
+    WRITE_BYTES, 16,
+    0x09, 0xE8, 0xD8, 0xA0,
+    0x0B, 0xEA, 0xD8, 0xA0,
+    0x0D, 0xEC, 0xD8, 0xA0,
+    0x0F, 0xEE, 0xD8, 0xA0,
+
+    WRITE_COMMAND_8, 0xEB,
+    WRITE_BYTES, 7,
+    0x02, 0x00, 0xE4, 0xE4,
+    0x88, 0x00, 0x40,
+
+    WRITE_C8_D16, 0xEC, 0x3C, 0x00,
+
+    WRITE_COMMAND_8, 0xED,
+    WRITE_BYTES, 16,
+    0xAB, 0x89, 0x76, 0x54,
+    0x02, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0x20,
+    0x45, 0x67, 0x98, 0xBA,
+
+    //-----------VAP & VAN---------------
+    WRITE_COMMAND_8, 0xFF,
+    WRITE_BYTES, 5, 0x77, 0x01, 0x00, 0x00, 0x13,
+
+    WRITE_C8_D8, 0xE5, 0xE4,
+
+    WRITE_COMMAND_8, 0xFF,
+    WRITE_BYTES, 5, 0x77, 0x01, 0x00, 0x00, 0x00,
+
+    WRITE_C8_D8, 0x3A, 0x60,  // RGB666 — see the comment above this table for why
+                              // this is correct despite 16 physical data lines.
+
+    // No display-inversion (0x21) command here — both board-specific sources
+    // omit it. A short delay before Sleep Out instead.
+    DELAY, 10,
+
+    WRITE_COMMAND_8, 0x11,  // Sleep Out
     END_WRITE,
+
     DELAY, 120,
+
     BEGIN_WRITE,
-    WRITE_COMMAND_8, 0x29,                        // Display On
+    WRITE_COMMAND_8, 0x29,  // Display On
     END_WRITE,
-    DELAY, 50,
 };
 
 namespace {
@@ -132,14 +250,8 @@ bool display_begin(uint8_t rotation) {
       PUCK_LCD_HSYNC_POLARITY, PUCK_LCD_HSYNC_FRONT_PORCH, PUCK_LCD_HSYNC_PULSE_WIDTH,
       PUCK_LCD_HSYNC_BACK_PORCH,
       PUCK_LCD_VSYNC_POLARITY, PUCK_LCD_VSYNC_FRONT_PORCH, PUCK_LCD_VSYNC_PULSE_WIDTH,
-      PUCK_LCD_VSYNC_BACK_PORCH, PUCK_LCD_PCLK_HZ);
-  // PUCK_LCD_PCLK_HZ is not passed here: the verified working constructor call
-  // this is based on (moononournation/Arduino_GFX#465, same board) doesn't
-  // take an explicit pixel-clock argument at this GFX library version, so the
-  // library's own default applies. If the image tears or won't sync, check
-  // whether your installed GFX Library for Arduino version added a trailing
-  // speed_hz parameter to Arduino_ESP32RGBPanel's constructor and wire
-  // PUCK_LCD_PCLK_HZ through to it.
+      PUCK_LCD_VSYNC_BACK_PORCH,
+      PUCK_LCD_VSYNC_BACK_PORCH);
 
   // Rotation is always 0 here, same reasoning as the old board: rotate in the
   // flush callback below, not through the panel/library, so it composes with
@@ -165,19 +277,10 @@ bool display_begin(uint8_t rotation) {
     Serial.printf("[display] backlight on GPIO%d via PWM, duty %u/255\n",
                   static_cast<int>(PUCK_LCD_BL), static_cast<unsigned>(PUCK_LCD_BRIGHTNESS));
   } else {
-    // ledcAttach() can fail without throwing — a silent no-op backlight looks
-    // identical to a wrong pin number from the outside. Falling back to a
-    // plain digital HIGH tells the two apart: if the backlight lights up now,
-    // the PWM attach was the problem (wrong LEDC channel/timer resource, core
-    // version quirk); if it's still dark, PUCK_LCD_BL itself is wrong for
-    // this board, or the backlight circuit needs something PWM can't give it
-    // (e.g. an active-low enable).
     digitalWrite(PUCK_LCD_BL, HIGH);
     Serial.printf(
         "[display] ledcAttach(GPIO%d) failed — backlight forced HIGH with plain "
-        "digitalWrite instead. If it's lit now, brightness control needs a different "
-        "LEDC setup; if it's still dark, check PUCK_LCD_BL against your board and "
-        "whether the backlight enable is active-low.\n",
+        "digitalWrite instead.\n",
         static_cast<int>(PUCK_LCD_BL));
   }
   s_current_brightness = PUCK_LCD_BRIGHTNESS;
