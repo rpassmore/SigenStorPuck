@@ -1,9 +1,12 @@
 # SigenStorPuck
 
-A round touchscreen status display for a Sigenergy SigenStor solar and battery system.
+A touchscreen status display for a Sigenergy SigenStor solar and battery system.
 
-It runs on a Waveshare **ESP32-S3-Touch-AMOLED-1.75** — a 466×466 round AMOLED with
-capacitive touch — and shows live power flow, battery state, solar generation against
+Modified from the original code to instead support the **Guition ESP32-4848S040** board. 
+
+This device features a square 480x480 LCD display and a capacitive touch screen but has no physical buttons or battery.
+
+Screen shows live power flow, battery state, solar generation against
 forecast, consumption, where the day's energy went, and what it all cost.
 
 ## Two ways to get data — read this first
@@ -261,28 +264,17 @@ address in your router and grant it again.
 
 ## The stand
 
-A desk stand for the Puck. It seats into the round face at the front and sits on the
-moulded base. Three parts in the file: the stand itself and two small caps at the top
-edge, either side of centre.
-
-<p align="center"><img src="docs/img/stand.png" width="320" alt="The printed stand seen from the front: a rounded upright with a circular recess for the Puck, two caps at the top edge, and a moulded base"></p>
-
-| | |
-|---|---|
-| [`SigenStorPuckStand.3mf`](docs/stl/SigenStorPuckStand.3mf) | The one to print. Carries all three parts, positioned as designed. |
-| [`SigenStorPuckStand.stl`](docs/stl/SigenStorPuckStand.stl) | The same geometry as a single mesh. |
-
-60 × 45 × 109 mm overall.
+TBD
 
 ## Hardware
 
 | | |
 |---|---|
-| Board | Waveshare ESP32-S3-Touch-AMOLED-1.75 |
-| Display | 466×466 round AMOLED, CO5300 over QSPI |
-| Touch | CST9217, I2C |
+| Board | Guition ESP32-4848S040 |
+| Display | 480×480 IPS LCD 16 bit color, special ESP32-S3 parallel mode The display is supported by the “GFX Library for Arduino” |
+| Touch | ST7701, I2C |
 | MCU | ESP32-S3R8, 8 MB PSRAM, 16 MB flash |
-| Also on board | AXP2101 PMIC, PCF85063 RTC, QMI8658 IMU |
+
 
 ## Building it yourself
 
