@@ -56,11 +56,20 @@ bool gt911_write_reg(uint8_t address, uint16_t reg, uint8_t value) {
 }
 
 // Returns bytes actually read, or -1 on an I2C error.
+//
+// Deliberately a full STOP between the register-address write and the
+// follow-up read (two separate Wire transactions), not a repeated start.
+// That was the actual bug behind wildly out-of-range coordinates on real
+// hardware (X=5599, Y computed back to ~10240 on a 480x480 panel) — this
+// board's GT911 doesn't answer a repeated-start read correctly. Confirmed
+// against sand1812/ESP32-4848S040's own Touch_GT911.cpp (the repo this
+// migration was originally scoped against), which uses exactly this
+// two-transaction pattern and no coordinate scaling at all.
 int gt911_read_regs(uint8_t address, uint16_t reg, uint8_t* buf, size_t len) {
   Wire.beginTransmission(address);
   Wire.write(static_cast<uint8_t>(reg >> 8));
   Wire.write(static_cast<uint8_t>(reg & 0xFF));
-  if (Wire.endTransmission(false) != 0) {
+  if (Wire.endTransmission() != 0) {  // STOP, not repeated start (see above)
     return -1;
   }
   const size_t got = Wire.requestFrom(static_cast<int>(address), static_cast<int>(len));
@@ -113,8 +122,16 @@ bool gt911_read_point(uint16_t* x, uint16_t* y) {
   if (count >= 1 && count <= 5) {
     uint8_t point[7];
     if (gt911_read_regs(s_address, GT911_REG_POINT0, point, sizeof(point)) == sizeof(point)) {
-      *x = static_cast<uint16_t>(point[1] | (point[2] << 8));
-      *y = static_cast<uint16_t>(point[3] | (point[4] << 8));
+      // Byte order confirmed against a real byte dump on this hardware:
+      // bytes [1..4] = (0x00, 0x0A, 0x00, 0x26) for a tap at the physical
+      // top-left corner decoded big-endian (high<<8|low) to (10, 38) —
+      // small numbers consistent with that corner. This chip's firmware
+      // reports big-endian, opposite of the datasheet convention the
+      // reference repos this migration is based on assumed; noted as a
+      // real batch/firmware difference on this board family, not a mistake
+      // in those repos.
+      *x = static_cast<uint16_t>((point[1] << 8) | point[2]);
+      *y = static_cast<uint16_t>((point[3] << 8) | point[4]);
       have_point = true;
     }
   }
@@ -136,9 +153,16 @@ bool gt911_read_point(uint16_t* x, uint16_t* y) {
 void indev_read_cb(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
   uint16_t raw_x = 0;
   uint16_t raw_y = 0;
+  const bool was_pressed = s_pressed;
   if (gt911_read_point(&raw_x, &raw_y)) {
-    lv_coord_t x = PUCK_LCD_WIDTH - 1 - static_cast<lv_coord_t>(raw_x);
-    lv_coord_t y = PUCK_LCD_HEIGHT - 1 - static_cast<lv_coord_t>(raw_y);
+    // No axis flip here, unlike the old CST9217 driver this replaced. Real
+    // hardware data confirmed raw X increases left-to-right and raw Y
+    // increases top-to-bottom already — i.e. this touch panel is bonded in
+    // the same orientation as the display, not rotated 180° the way the old
+    // sensor was. Applying the old "WIDTH-1-x, HEIGHT-1-y" flip to
+    // already-correct values would have inverted them.
+    lv_coord_t x = static_cast<lv_coord_t>(raw_x);
+    lv_coord_t y = static_cast<lv_coord_t>(raw_y);
 
     // Undo the fine rotation about the centre of the panel, same as before —
     // this math has nothing to do with which touch chip is underneath.
@@ -149,6 +173,12 @@ void indev_read_cb(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
       const float oy = y - cy;
       x = static_cast<lv_coord_t>(lroundf(cx + ox * s_fine_cos - oy * s_fine_sin));
       y = static_cast<lv_coord_t>(lroundf(cy + ox * s_fine_sin + oy * s_fine_cos));
+    }
+
+    // TEMPORARY DIAGNOSTIC — remove once orientation is confirmed correct.
+    if (!was_pressed) {
+      Serial.printf("[touch] raw=(%u,%u) -> panel=(%d,%d)\n", static_cast<unsigned>(raw_x),
+                    static_cast<unsigned>(raw_y), static_cast<int>(x), static_cast<int>(y));
     }
 
     s_last_point.x = x;
