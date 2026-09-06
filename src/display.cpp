@@ -251,7 +251,16 @@ bool display_begin(uint8_t rotation) {
       PUCK_LCD_HSYNC_BACK_PORCH,
       PUCK_LCD_VSYNC_POLARITY, PUCK_LCD_VSYNC_FRONT_PORCH, PUCK_LCD_VSYNC_PULSE_WIDTH,
       PUCK_LCD_VSYNC_BACK_PORCH,
-      PUCK_LCD_VSYNC_BACK_PORCH);
+      // pclk_active_neg=1 is the change that cleared the faint glitch lines
+      // on real hardware (found by accident, passing the vsync back porch
+      // constant a second time — see board_config.h for the real named
+      // constant this became). Speed and bounce buffer are deliberately left
+      // at library defaults here rather than reintroduced alongside the
+      // polarity fix, so if any tearing remains it's clear that's the next
+      // thing to add back, not a second unknown mixed in with this one.
+      PUCK_LCD_PCLK_ACTIVE_NEG /* pclk_active_neg */, GFX_NOT_DEFINED /* prefer_speed */,
+      false /* useBigEndian */, 0 /* de_idle_high */, 0 /* pclk_idle_high */,
+      0 /* bounce_buffer_size_px */);
 
   // Rotation is always 0 here, same reasoning as the old board: rotate in the
   // flush callback below, not through the panel/library, so it composes with
