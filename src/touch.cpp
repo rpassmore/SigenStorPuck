@@ -11,12 +11,12 @@
 // bus by hand, and it avoids pulling in a new dependency for one register
 // read. 16-bit register addresses, MSB first; a status byte at 0x814E with a
 // "new data" flag in bit 7 and a point count in the low nibble, then up to
-// five 8-byte point records from 0x8150. Standard and stable across GT911
+// five 8-byte point records from 0x814F. Standard and stable across GT911
 // clones; this needs no per-vendor config-table upload to read touch points.
 namespace {
 
 constexpr uint16_t GT911_REG_STATUS = 0x814E;
-constexpr uint16_t GT911_REG_POINT0 = 0x8150;
+constexpr uint16_t GT911_REG_POINT0 = 0x814F;
 constexpr uint16_t GT911_REG_PRODUCT_ID = 0x8140;
 
 uint8_t s_address = 0;
@@ -113,7 +113,6 @@ bool gt911_read_point(uint16_t* x, uint16_t* y) {
     return false;
   }
   if (!(status & 0x80)) {
-    // No new buffer since the last read — not an error, just nothing to report.
     return false;
   }
 
@@ -122,21 +121,14 @@ bool gt911_read_point(uint16_t* x, uint16_t* y) {
   if (count >= 1 && count <= 5) {
     uint8_t point[7];
     if (gt911_read_regs(s_address, GT911_REG_POINT0, point, sizeof(point)) == sizeof(point)) {
-      // Byte order confirmed against a real byte dump on this hardware:
-      // bytes [1..4] = (0x00, 0x0A, 0x00, 0x26) for a tap at the physical
-      // top-left corner decoded big-endian (high<<8|low) to (10, 38) —
-      // small numbers consistent with that corner. This chip's firmware
-      // reports big-endian, opposite of the datasheet convention the
-      // reference repos this migration is based on assumed; noted as a
-      // real batch/firmware difference on this board family, not a mistake
-      // in those repos.
-      *x = static_cast<uint16_t>((point[1] << 8) | point[2]);
-      *y = static_cast<uint16_t>((point[3] << 8) | point[4]);
+      // Standard GT911 point record: track_id, x_lo, x_hi, y_lo, y_hi, size_lo, size_hi.
+      // Little-endian, matching Touch_GT911.cpp's readPoint(). 
+      *x = static_cast<uint16_t>(point[1] | (point[2] << 8));
+      *y = static_cast<uint16_t>(point[3] | (point[4] << 8));
       have_point = true;
     }
   }
 
-  // Must be acknowledged or the chip never posts another update.
   gt911_write_reg(s_address, GT911_REG_STATUS, 0x00);
   return have_point;
 }
@@ -173,12 +165,6 @@ void indev_read_cb(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
       const float oy = y - cy;
       x = static_cast<lv_coord_t>(lroundf(cx + ox * s_fine_cos - oy * s_fine_sin));
       y = static_cast<lv_coord_t>(lroundf(cy + ox * s_fine_sin + oy * s_fine_cos));
-    }
-
-    // TEMPORARY DIAGNOSTIC — remove once orientation is confirmed correct.
-    if (!was_pressed) {
-      Serial.printf("[touch] raw=(%u,%u) -> panel=(%d,%d)\n", static_cast<unsigned>(raw_x),
-                    static_cast<unsigned>(raw_y), static_cast<int>(x), static_cast<int>(y));
     }
 
     s_last_point.x = x;

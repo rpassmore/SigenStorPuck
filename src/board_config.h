@@ -131,16 +131,8 @@ static constexpr uint8_t PUCK_TOUCH_ADDR_ALT = 0x14;
 // something the read path currently uses.
 static constexpr uint8_t PUCK_TOUCH_MAX_POINTS = 5;
 
-// UNVERIFIED for this board. These described a fact about how the old
-// CST9217 was physically bonded to the old round glass — they do not
-// necessarily hold for this board's GT911/panel pairing. touch.cpp currently
-// hardcodes the same "flip both axes" math directly in indev_read_cb (kept
-// unchanged from the old driver, same as these say) rather than reading
-// these two constants — so if you find on hardware that the flip is wrong,
-// fix it in touch.cpp's indev_read_cb *and* update these two to match, or
-// they'll describe a mounting that isn't what the code does.
-static constexpr bool PUCK_TOUCH_MIRROR_X = true;
-static constexpr bool PUCK_TOUCH_MIRROR_Y = true;
+static constexpr bool PUCK_TOUCH_MIRROR_X = false;
+static constexpr bool PUCK_TOUCH_MIRROR_Y = false;
 
 // -------------------------------------------------------------------- i2c ---
 
