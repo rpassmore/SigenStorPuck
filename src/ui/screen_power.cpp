@@ -6,6 +6,7 @@
 #include "board_config.h"
 #include "format.h"
 #include "theme.h"
+#include "power_colour.h"
 
 namespace {
 
@@ -325,9 +326,9 @@ lv_obj_t* screen_power_create(lv_obj_t* parent) {
   s_ring = lv_arc_create(s_root);
   lv_obj_set_size(s_ring, PUCK_RING_DIAMETER, PUCK_RING_DIAMETER);
   lv_obj_center(s_ring);
-  lv_arc_set_rotation(s_ring, 270);  // zero at the top
-  lv_arc_set_bg_angles(s_ring, 0, 360);
-  lv_arc_set_range(s_ring, 0, 100);
+  lv_arc_set_rotation(s_ring, -90);  // zero at the left
+  lv_arc_set_range(s_ring, -10000, 10000);
+  lv_arc_set_mode(s_ring, LV_ARC_MODE_SYMMETRICAL); //Set the mode to SYMMETRICAL so it expands outwards from the centre of the range (0)
   lv_arc_set_value(s_ring, 0);
   lv_obj_remove_style(s_ring, nullptr, LV_PART_KNOB);
   lv_obj_clear_flag(s_ring, LV_OBJ_FLAG_CLICKABLE);
@@ -415,14 +416,37 @@ void screen_power_update(const Snapshot& snapshot) {
     return;
   }
 
+  if(snapshot.power.grid.known) {
+    float pwrWatts = snapshot.power.grid.value * 1000.0f;
+    lv_arc_set_value(s_ring, pwrWatts);
+
+    lv_obj_set_style_arc_color(s_ring, lv_color_hex(power_to_colour(pwrWatts)), LV_PART_INDICATOR);
+
+
+    // if (pwrWatts >= 2000.0f) {
+    //   lv_obj_set_style_arc_color(s_ring, lv_color_hex(PUCK_COLOUR_ALARM), LV_PART_INDICATOR);
+    // } else if (pwrWatts >= 1000.0f) {
+    //   lv_obj_set_style_arc_color(s_ring, lv_color_hex(PUCK_COLOUR_WARN), LV_PART_INDICATOR);
+    // } else if (pwrWatts <= -3000.0f) {
+    //   lv_obj_set_style_arc_color(s_ring, lv_color_hex(PUCK_COLOUR_BATTERY), LV_PART_INDICATOR);
+    // } else if (pwrWatts <= -1000.0f) {
+    //   lv_obj_set_style_arc_color(s_ring, lv_color_hex(PUCK_COLOUR_SOLAR), LV_PART_INDICATOR);
+    // } else {
+    //   lv_obj_set_style_arc_color(s_ring, lv_color_hex(PUCK_COLOUR_TEXT), LV_PART_INDICATOR);
+    // }
+
+  } else {
+    lv_arc_set_value(s_ring, 0);
+  }
+
   // Battery ring and its readout.
   if (snapshot.battery.soc_pct.known) {
-    lv_arc_set_value(s_ring, static_cast<int16_t>(snapshot.battery.soc_pct.value));
+    // lv_arc_set_value(s_ring, static_cast<int16_t>(snapshot.battery.soc_pct.value));
     char text[16];
     snprintf(text, sizeof(text), "SOC %.0f%%", snapshot.battery.soc_pct.value);
     lv_label_set_text(s_soc_label, text);
   } else {
-    lv_arc_set_value(s_ring, 0);
+    // lv_arc_set_value(s_ring, 0);
     lv_label_set_text(s_soc_label, "SOC --");
   }
 
