@@ -103,6 +103,11 @@ lv_obj_t* s_soc_label = nullptr;
 lv_obj_t* s_device_battery = nullptr;
 Leg s_legs[LEG_COUNT];
 
+// Forawrd declarations
+static void draw_zero_marker(lv_draw_ctx_t* draw_ctx, lv_point_t center,
+                              uint16_t radius, int32_t arc_width, int32_t angle_deg);
+
+
 // ------------------------------------------------------------- formatting ---
 
 uint32_t period_for(float kw) {
@@ -322,138 +327,120 @@ void arc_symmetrical_sweep_cb(lv_event_t* e) {
 
     lv_obj_draw_part_dsc_t* dsc = lv_event_get_draw_part_dsc(e);
     
-    if (dsc->class_p == &lv_arc_class && dsc->type == LV_ARC_DRAW_PART_FOREGROUND) {
-        int32_t current_val = lv_arc_get_value(s_ring);
-        
-        if (current_val == 0) {
-            dsc->arc_dsc->width = 0;
-            dsc->arc_dsc->opa = LV_OPA_TRANSP;
-            return;
-        }
+    if (dsc->class_p != &lv_arc_class || dsc->type != LV_ARC_DRAW_PART_FOREGROUND) {
+        return;
+    }
 
-        int32_t start_angle = lv_arc_get_angle_start(s_ring);
-        int32_t end_angle = lv_arc_get_angle_end(s_ring);
-        int32_t total_angle_sweep = end_angle - start_angle;
-        
-        // Correct for wrapping if crossing 360 degrees
-        if (total_angle_sweep < 0) {
-            total_angle_sweep += 360;
-        }
-        
-        if (total_angle_sweep <= 0) return;
+    lv_point_t center;
+    center.x = dsc->p1->x;
+    center.y = dsc->p1->y;
+    uint16_t radius = dsc->radius;
+    int32_t arc_width = dsc->arc_dsc->width; // snapshot before we zero it out below
 
-        lv_point_t center;
-        center.x = dsc->p1->x;
-        center.y = dsc->p1->y;
-        uint16_t radius = dsc->radius;
+    const int32_t origin_angle = 180; // 9:00 in LVGL's screen-angle convention
 
+    int32_t current_val = lv_arc_get_value(s_ring);
+    int32_t start_angle = lv_arc_get_angle_start(s_ring);
+    int32_t end_angle = lv_arc_get_angle_end(s_ring);
+    int32_t total_angle_sweep = end_angle - start_angle;
+    if (total_angle_sweep < 0) {
+        total_angle_sweep += 360;
+    }
+
+    if (current_val != 0 && total_angle_sweep > 0) {
         lv_draw_arc_dsc_t slice_dsc;
         lv_memcpy(&slice_dsc, dsc->arc_dsc, sizeof(lv_draw_arc_dsc_t));
-        slice_dsc.opa = LV_OPA_COVER; 
+        slice_dsc.opa = LV_OPA_COVER;
+        slice_dsc.width = arc_width;
 
-        // const lv_color_t c_white = lv_color_hex(COLOUR_WHITE);
-        // const lv_color_t c_amber = lv_color_hex(COLOUR_AMBER);
-        // const lv_color_t c_red   = lv_color_hex(COLOUR_RED);
-
-        // // Define our fixed starting anchor point (9:00 = 180 degrees in LVGL's angle system)
-        // const int32_t origin_angle = 180;
-
-        // for (int32_t deg = 0; deg < total_angle_sweep; deg++) {
-        //     // Symmetrical math: map degrees to absolute distance outward from 0
-        //     int32_t slice_val = (deg * std::abs(current_val)) / total_angle_sweep;
-        //     lv_color_t slice_color;
-
-        //     if (slice_val <= s_gradient_config.amber_threshold) {
-        //         int32_t range = s_gradient_config.amber_threshold;
-        //         int32_t ratio = (range > 0) ? (slice_val * 255) / range : 255;
-        //         slice_color = lv_color_mix(c_amber, c_white, ratio);
-        //     } 
-        //     else if (slice_val <= s_gradient_config.red_threshold) {
-        //         int32_t range = s_gradient_config.red_threshold - s_gradient_config.amber_threshold;
-        //         int32_t ratio = (range > 0) ? ((slice_val - s_gradient_config.amber_threshold) * 255) / range : 255;
-        //         slice_color = lv_color_mix(c_red, c_amber, ratio);
-        //     } 
-        //     else {
-        //         slice_color = c_red;
-        //     }
-            
-        //     slice_dsc.color = slice_color;
-
-        //     // FIX: Force BOTH drawing directions to begin explicitly at the origin point.
-        //     if (current_val > 0) {
-        //         // Positive (Clockwise): Steps go 270, 271, 272...
-        //         int32_t target_deg = origin_angle + deg;
-        //         lv_draw_arc(dsc->draw_ctx, &slice_dsc, &center, radius, target_deg, target_deg + 1);
-        //     } else {
-        //         // Negative (Counter-Clockwise): Steps go 269, 268, 267...
-        //         int32_t target_deg = origin_angle - deg - 1;
-        //         lv_draw_arc(dsc->draw_ctx, &slice_dsc, &center, radius, target_deg, target_deg + 1);
-        //     }
-        // }
-        
         const lv_color_t c_white = lv_color_hex(POWER_COLOUR_WHITE);
-        const lv_color_t c_amber = lv_color_hex(POWER_COLOUR_AMBER);
-        const lv_color_t c_red   = lv_color_hex(POWER_COLOUR_RED);
-        const lv_color_t c_blue  = lv_color_hex(POWER_COLOUR_BLUE);
-        const lv_color_t c_green = lv_color_hex(POWER_COLOUR_GREEN);
-
-        // Define our fixed starting anchor point (9:00 = 180 degrees in LVGL's angle system)
-        const int32_t origin_angle = 180;
+        const lv_color_t c_imp_mid = lv_color_hex(POWER_COLOUR_IMP_MID);
+        const lv_color_t c_imp_high   = lv_color_hex(POWER_COLOUR_IMP_HIGH);
+        const lv_color_t c_exp_mid  = lv_color_hex(POWER_COLOUR_EXP_MID);
+        const lv_color_t c_exp_high = lv_color_hex(POWER_COLOUR_EXP_HIGH);
 
         for (int32_t deg = 0; deg < total_angle_sweep; deg++) {
             int32_t slice_val = (deg * std::abs(current_val)) / total_angle_sweep;
             lv_color_t slice_color;
 
             if (current_val > 0) {
-                // Positive: white -> amber -> red
-                if (slice_val <= s_gradient_config.amber_threshold) {
-                    int32_t range = s_gradient_config.amber_threshold;
+                if (slice_val <= s_gradient_config.imp_mid_threshold) {
+                    // import mid
+                    int32_t range = s_gradient_config.imp_mid_threshold;
                     int32_t ratio = (range > 0) ? (slice_val * 255) / range : 255;
-                    slice_color = lv_color_mix(c_amber, c_white, ratio);
-                } 
-                else if (slice_val <= s_gradient_config.red_threshold) {
-                    int32_t range = s_gradient_config.red_threshold - s_gradient_config.amber_threshold;
-                    int32_t ratio = (range > 0) ? ((slice_val - s_gradient_config.amber_threshold) * 255) / range : 255;
-                    slice_color = lv_color_mix(c_red, c_amber, ratio);
-                } 
-                else {
-                    slice_color = c_red;
+                    slice_color = lv_color_mix(c_imp_mid, c_white, ratio);
+                } else if (slice_val <= s_gradient_config.imp_high_threshold) { 
+                    // import high
+                    int32_t range = s_gradient_config.imp_high_threshold - s_gradient_config.imp_mid_threshold;
+                    int32_t ratio = (range > 0) ? ((slice_val - s_gradient_config.imp_mid_threshold) * 255) / range : 255;
+                    slice_color = lv_color_mix(c_imp_high, c_imp_mid, ratio);
+                } else {
+                    slice_color = c_imp_high;
                 }
             } else {
-                // Negative: white -> blue -> green
-                if (slice_val <= s_gradient_config.blue_threshold) {
-                    int32_t range = s_gradient_config.blue_threshold;
+                if (slice_val <= s_gradient_config.exp_mid_threshold) {
+                    // export mid
+                    int32_t range = s_gradient_config.exp_mid_threshold;
                     int32_t ratio = (range > 0) ? (slice_val * 255) / range : 255;
-                    slice_color = lv_color_mix(c_blue, c_white, ratio);
-                } 
-                else if (slice_val <= s_gradient_config.green_threshold) {
-                    int32_t range = s_gradient_config.green_threshold - s_gradient_config.blue_threshold;
-                    int32_t ratio = (range > 0) ? ((slice_val - s_gradient_config.blue_threshold) * 255) / range : 255;
-                    slice_color = lv_color_mix(c_green, c_blue, ratio);
-                } 
-                else {
-                    slice_color = c_green;
+                    slice_color = lv_color_mix(c_exp_mid, c_white, ratio);
+                } else if (slice_val <= s_gradient_config.exp_high_threshold) {
+                    // export high
+                    int32_t range = s_gradient_config.exp_high_threshold - s_gradient_config.exp_mid_threshold;
+                    int32_t ratio = (range > 0) ? ((slice_val - s_gradient_config.exp_mid_threshold) * 255) / range : 255;
+                    slice_color = lv_color_mix(c_exp_high, c_exp_mid, ratio);
+                } else {
+                    // white
+                    slice_color = c_exp_high;
                 }
             }
-            
+
             slice_dsc.color = slice_color;
 
-            if (current_val > 0) {
-                int32_t target_deg = origin_angle + deg;
-                lv_draw_arc(dsc->draw_ctx, &slice_dsc, &center, radius, target_deg, target_deg + 1);
-            } else {
-                int32_t target_deg = origin_angle - deg - 1;
-                lv_draw_arc(dsc->draw_ctx, &slice_dsc, &center, radius, target_deg, target_deg + 1);
-            }
+            int32_t target_deg = (current_val > 0)
+                ? origin_angle + deg
+                : origin_angle - deg - 1;
+            lv_draw_arc(dsc->draw_ctx, &slice_dsc, &center, radius, target_deg, target_deg + 1);
         }
-
-        // Suppress default single-color theme lines
-        dsc->arc_dsc->width = 0;
-        dsc->arc_dsc->opa = LV_OPA_TRANSP;
     }
+
+    // Always draw a zero-position tick, regardless of current_val
+    draw_zero_marker(dsc->draw_ctx, center, radius, arc_width, origin_angle);
+
+    // Suppress default single-color theme lines
+    dsc->arc_dsc->width = 0;
+    dsc->arc_dsc->opa = LV_OPA_TRANSP;
 }
 
+static void draw_zero_marker(lv_draw_ctx_t* draw_ctx, lv_point_t center,
+                              uint16_t radius, int32_t arc_width, int32_t angle_deg) {
+    if (arc_width <= 0) return;
 
+    float angle_rad = angle_deg * (float)M_PI / 180.0f;
+    float cos_a = cosf(angle_rad);
+    float sin_a = sinf(angle_rad);
+
+    // Position the dot on the ring's midline (halfway through its thickness)
+    int32_t mid_r = radius - (arc_width / 2);
+    int32_t cx = center.x + (int32_t)(mid_r * cos_a);
+    int32_t cy = center.y + (int32_t)(mid_r * sin_a);
+
+    int32_t dot_d = arc_width;
+    if (dot_d < 4) dot_d = 4; // floor so it doesn't vanish on thin rings
+
+    lv_area_t area;
+    area.x1 = cx - dot_d / 2;
+    area.y1 = cy - dot_d / 2;
+    area.x2 = cx + dot_d / 2;
+    area.y2 = cy + dot_d / 2;
+
+    lv_draw_rect_dsc_t rect_dsc;
+    lv_draw_rect_dsc_init(&rect_dsc);
+    rect_dsc.bg_color   = lv_color_hex(POWER_COLOUR_ZERO_MARKER);
+    rect_dsc.bg_opa     = LV_OPA_COVER;
+    rect_dsc.border_width = 0;
+
+    lv_draw_rect(draw_ctx, &rect_dsc, &area);
+}
 
 }  // namespace
 
@@ -478,10 +465,7 @@ lv_obj_t* screen_power_create(lv_obj_t* parent) {
   lv_obj_set_style_arc_width(s_ring, PUCK_RING_WIDTH, LV_PART_MAIN);
   lv_obj_set_style_arc_width(s_ring, PUCK_RING_WIDTH, LV_PART_INDICATOR);
   lv_obj_set_style_arc_color(s_ring, lv_color_hex(PUCK_COLOUR_TRACK), LV_PART_MAIN);
-  // lv_obj_set_style_arc_color(s_ring, lv_color_hex(PUCK_COLOUR_BATTERY), LV_PART_INDICATOR);
   lv_obj_add_event_cb(s_ring, arc_symmetrical_sweep_cb, LV_EVENT_DRAW_PART_BEGIN, nullptr);
-
-
 
   // The virtual plant node: inverter and gateway as one. A hairline rather than
   // a filled disc, so it reads as a boundary without competing with the legs.
@@ -648,8 +632,8 @@ void screen_power_set_device_battery(bool show, int percent, bool charging) {
 }
 
 void screen_power_set_gradient_thresholds(int32_t absolute_amber, int32_t absolute_red) {
-    s_gradient_config.amber_threshold = absolute_amber;
-    s_gradient_config.red_threshold = absolute_red;
+    s_gradient_config.imp_mid_threshold = absolute_amber;
+    s_gradient_config.imp_high_threshold = absolute_red;
 
     if (s_ring != nullptr) {
         lv_obj_invalidate(s_ring); // Forces display engine redraw task
