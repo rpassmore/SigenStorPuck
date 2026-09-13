@@ -15,6 +15,7 @@
 #include "screen_settings.h"
 #include "screen_solar.h"
 #include "theme.h"
+#include "ui_perf.h"
 
 namespace {
 
@@ -52,6 +53,7 @@ lv_obj_t* s_shift_root = nullptr;
 lv_obj_t* s_sweep = nullptr;
 uint32_t s_rotate_seconds = 0;
 uint32_t s_sweep_minutes = 0;
+uint32_t s_day_return_seconds = 0;
 lv_obj_t* s_overlay = nullptr;
 lv_obj_t* s_overlay_title = nullptr;
 lv_obj_t* s_overlay_detail = nullptr;
@@ -64,6 +66,21 @@ bool s_rotate_enabled = true;
 int s_day_offset = 0;
 uint32_t s_last_ts = 0;
 bool s_day_stepping = true;
+
+// LVGL clamps snap animations to 200-400 ms. On the rotated physical display a
+// frame takes roughly 100-190 ms, so that default creates a long trail of costly
+// intermediate frames after the finger is already up. The drag itself remains
+// direct; this only makes the final snap settle in about one rendered frame.
+constexpr uint32_t SWIPE_SETTLE_MS = 80;
+
+bool screen_has_chart(int index) {
+  if (index < 0 || index >= s_screen_count) {
+    return false;
+  }
+  const PuckScreen screen = s_screen_at[index];
+  return screen == PUCK_SCREEN_BATTERY || screen == PUCK_SCREEN_SOLAR ||
+         screen == PUCK_SCREEN_LOAD;
+}
 
 // The live reading and the viewed day, held apart because different screens want
 // different ones. Screen 1 is always live; the rest follow the day when there is
@@ -146,8 +163,16 @@ void housekeeping_tick(lv_timer_t* /*timer*/) {
       for (int step = 1; step <= s_screen_count; ++step) {
         const int candidate = (ui_current_screen() + step) % s_screen_count;
         if (s_rotate_mask & (1u << s_screen_at[candidate])) {
-          lv_obj_set_tile(s_tileview, s_tiles[candidate], LV_ANIM_ON);
-          highlight_active_dot();
+          const int current = ui_current_screen();
+          ui_perf_transition_begin(UiPerfTransitionKind::AutoCycle, current,
+                                   candidate, false, screen_has_chart(current),
+                                   screen_has_chart(candidate));
+          // Auto-cycling is decorative rather than a gesture. An animated slide
+          // held the UI core in repeated full-height redraws long after the
+          // destination was known; a direct change responds immediately while
+          // finger-driven swipes retain their native motion.
+          lv_obj_set_tile(s_tileview, s_tiles[candidate], LV_ANIM_OFF);
+          ui_perf_transition_ready(candidate, screen_has_chart(candidate));
           break;
         }
       }
@@ -162,6 +187,18 @@ void housekeeping_tick(lv_timer_t* /*timer*/) {
       sweep_elapsed = 0;
       run_sweep();
     }
+  }
+
+  // A past day is something being looked at, not somewhere to leave the display.
+  // The only way off one used to be BOOT, so a single press of PWR — pressing it
+  // to brighten a dimmed screen is enough, since only a *sleeping* panel swallows
+  // the waking press — parked the device on yesterday indefinitely, and each
+  // midnight just moved it along to a new yesterday. Measured on the same
+  // inactivity clock as everything above, so a swipe or a press while somebody is
+  // actually reading holds it where it is.
+  if (s_day_return_seconds > 0 && s_day_offset != 0 &&
+      idle_ms >= s_day_return_seconds * 1000) {
+    ui_set_day_offset(0);
   }
 }
 
@@ -249,14 +286,38 @@ void on_tile_changed(lv_event_t* /*event*/) {
   refresh_top_slot();
 }
 
+void on_tile_scroll_begin(lv_event_t* event) {
+  if (lv_anim_t* animation = lv_event_get_scroll_anim(event)) {
+    lv_anim_set_time(animation, SWIPE_SETTLE_MS);
+    ui_perf_swipe_settle(SWIPE_SETTLE_MS);
+    return;
+  }
+  const int current = ui_current_screen();
+  ui_perf_swipe_begin(current, screen_has_chart(current));
+}
+
+void on_tile_scroll_end(lv_event_t* /*event*/) {
+  // A released swipe can emit SCROLL_END once when its snap animation starts
+  // and again when that animation actually finishes. Only the latter is
+  // visually complete. The active tile already names the snap destination, so
+  // comparing it with the current scroll position avoids reporting the first
+  // event as the end of the transition.
+  lv_obj_t* active = lv_tileview_get_tile_act(s_tileview);
+  if (active == nullptr || lv_obj_get_scroll_x(s_tileview) != lv_obj_get_x(active)) {
+    return;
+  }
+  const int current = ui_current_screen();
+  ui_perf_transition_ready(current, screen_has_chart(current));
+}
+
 }  // namespace
 
 lv_obj_t* ui_create(lv_obj_t* parent, const UiConfig& config) {
   // The settings screen is built whatever its bit says: it carries the QR code
   // and the address of this page, and is the only way back to it from the glass.
   uint8_t wanted = config.visible | (1u << PUCK_SCREEN_SETTINGS);
-  if (!config.with_server_screens) {
-    wanted &= static_cast<uint8_t>(~PUCK_SERVER_ONLY_SCREENS);
+  if (!config.with_detailed_screens) {
+    wanted &= static_cast<uint8_t>(~PUCK_DETAILED_SCREENS);
   }
   // Screen 1 is the device's reason to exist and the one every failure mode
   // falls back to. Leaving nothing but the settings screen would look broken.
@@ -302,10 +363,10 @@ lv_obj_t* ui_create(lv_obj_t* parent, const UiConfig& config) {
         screen_battery_create(s_tiles[i]);
         break;
       case PUCK_SCREEN_SOLAR:
-        screen_solar_create(s_tiles[i]);
+        screen_solar_create(s_tiles[i], config.solar_figures);
         break;
       case PUCK_SCREEN_LOAD:
-        screen_load_create(s_tiles[i], config.with_server_screens);
+        screen_load_create(s_tiles[i], config.with_detailed_screens);
         break;
       case PUCK_SCREEN_FLOWS:
         screen_flows_create(s_tiles[i]);
@@ -416,6 +477,16 @@ lv_obj_t* ui_create(lv_obj_t* parent, const UiConfig& config) {
   lv_timer_create(housekeeping_tick, 1000, nullptr);
 
   lv_obj_add_event_cb(s_tileview, on_tile_changed, LV_EVENT_VALUE_CHANGED, nullptr);
+  lv_obj_add_event_cb(s_tileview, on_tile_scroll_begin, LV_EVENT_SCROLL_BEGIN, nullptr);
+  lv_obj_add_event_cb(s_tileview, on_tile_scroll_end, LV_EVENT_SCROLL_END, nullptr);
+  // Named explicitly, because LVGL 8.4 does not. Adding tiles never sets the
+  // tileview's active tile — only lv_obj_set_tile() and a finished scroll do — so
+  // it is NULL until the first screen change, the highlight below matches nothing,
+  // and the device booted with no page dot lit. ui_current_screen() hid it by
+  // falling back to 0, and so did the sim, whose first ui_show_screen(0) did a
+  // real tile change until that call learned to skip "already there". Tile 0
+  // already sits at scroll 0, so this sends no events; it only records the fact.
+  lv_obj_set_tile(s_tileview, s_tiles[0], LV_ANIM_OFF);
   highlight_active_dot();
 
   return s_tileview;
@@ -557,6 +628,10 @@ void ui_set_rotate_interval(uint32_t seconds) {
 
 void ui_set_sweep_interval(uint32_t minutes) {
   s_sweep_minutes = minutes;
+}
+
+void ui_set_day_return(uint32_t seconds) {
+  s_day_return_seconds = seconds;
 }
 
 void ui_set_device_battery(bool show, int percent, bool charging) {
@@ -715,10 +790,15 @@ void ui_show_screen(int index) {
   if (s_tileview == nullptr || index < 0 || index >= s_screen_count) {
     return;
   }
-  // No animation: used to jump straight to a screen for a screenshot, where a
-  // half-finished slide would be captured instead of the screen.
+  const int current = ui_current_screen();
+  if (current == index) {
+    return;
+  }
+  ui_perf_transition_begin(UiPerfTransitionKind::Programmatic, current, index,
+                           false, screen_has_chart(current),
+                           screen_has_chart(index));
+  // No animation: used both for immediate button response and to jump straight
+  // to a simulator screenshot, where a half-finished slide would be captured.
   lv_obj_set_tile(s_tileview, s_tiles[index], LV_ANIM_OFF);
-  highlight_active_dot();
-  refresh_day_chip();
-  refresh_top_slot();
+  ui_perf_transition_ready(index, screen_has_chart(index));
 }

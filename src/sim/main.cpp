@@ -41,7 +41,7 @@ int16_t s_startup_tilt = 0;
 // --modbus previews the reduced arrangement that data source gets: no cost
 // screen and no flows screen (§D1), which is otherwise only visible on a device
 // configured for it.
-bool s_with_server_screens = true;
+bool s_with_detailed_screens = true;
 
 // The real screen, plus the raw field dump kept behind the 'd' key. Keeping the
 // dump around is worth its few lines: when a screen shows something surprising,
@@ -418,7 +418,7 @@ void build_views() {
   lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
 
   UiConfig config;
-  config.with_server_screens = s_with_server_screens;
+  config.with_detailed_screens = s_with_detailed_screens;
   ui_create(screen, config);
 
   // A stand-in for what net_hostname()/net_ip() return on the device, so the
@@ -637,6 +637,33 @@ int run_screenshot_pass(const std::string& output_directory) {
     }
   }
 
+  // The return to today, which runs on LVGL's inactivity clock — real time in the
+  // sim, so the timeout is shortened to two seconds for the check rather than
+  // waited out. Both halves are checked, because a return that fired at once would
+  // pass the second on its own: still on the past day a second after the press
+  // that put it there, and back on today once the timeout has passed.
+  {
+    ui_set_day_return(2);
+    ui_set_day_offset(-1);
+    lv_disp_trig_activity(nullptr);  // what the press that stepped back does
+    const auto run_for = [](uint32_t ms) {
+      for (uint32_t t = 0; t < ms; t += 20) {
+        sim_backend_delay(20);
+        lv_timer_handler();
+      }
+    };
+    run_for(1000);
+    const bool held = ui_day_offset() == -1;
+    run_for(2500);
+    const bool returned = ui_day_offset() == 0;
+    printf("[sim] day return: %s while recent, %s after the timeout\n",
+           held ? "held" : "RETURNED EARLY", returned ? "back to today" : "STILL ON A PAST DAY");
+    if (!held || !returned) {
+      ++failures;
+    }
+    ui_set_day_return(0);
+  }
+
   ui_set_day_offset(0);
   ui_clear_day();
 
@@ -667,7 +694,7 @@ int main(int argc, char** argv) {
     if (argument == "--selftest") {
       return run_selftest();
     } else if (argument == "--modbus") {
-      s_with_server_screens = false;
+      s_with_detailed_screens = false;
     } else if (argument == "--shot" && i + 1 < argc) {
       shot_directory = argv[++i];
     } else if (argument == "--tilt" && i + 1 < argc) {

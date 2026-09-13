@@ -5,9 +5,12 @@
 #include <freertos/task.h>
 
 #include "modbus_api.h"
+#include "home_assistant_api.h"
+#include "history_backfill_retry.h"
 #include "settings.h"
 #include "sigen_api.h"
 #include "solar_api.h"
+#include "solar_source.h"
 #include "updater.h"
 #include "ui/ui.h"
 
@@ -19,7 +22,7 @@ namespace {
 // under-sized stack here shows up as a crash inside the handshake rather than as
 // anything that looks like a stack problem.
 //
-// One size for both sources, even though a Modbus fetch needs nothing like it.
+// One size for every source, even though a Modbus fetch needs nothing like it.
 // The update check runs on this task too (updater_service), and that is a TLS
 // request whichever source the device polls with — so the 6 KB this used to drop
 // to on the Modbus path would have overflowed inside the handshake the first
@@ -44,6 +47,8 @@ SemaphoreHandle_t s_lock = nullptr;
 Snapshot s_snapshot;
 PollStatus s_status;
 int32_t s_tz_offset_min = 0;
+uint32_t s_snapshot_generation = 0;
+uint32_t s_day_generation = 0;
 volatile bool s_wake = false;
 
 // Task-local in practice — only poll_task touches these — but kept here with the
@@ -97,10 +102,36 @@ uint32_t backoff_for(uint32_t failures) {
   return delay_ms > BACKOFF_CEILING_MS ? BACKOFF_CEILING_MS : delay_ms;
 }
 
+void format_utc_minute(uint32_t timestamp, char* out, size_t out_size) {
+  const time_t when = static_cast<time_t>(timestamp);
+  struct tm parts = {};
+  if (out == nullptr || out_size == 0 || gmtime_r(&when, &parts) == nullptr ||
+      strftime(out, out_size, "%Y-%m-%dT%H:%MZ", &parts) == 0) {
+    if (out != nullptr && out_size != 0) {
+      out[0] = '\0';
+    }
+  }
+}
+
+FetchResult fetch_source(DataSource source, Snapshot* out, int* detail) {
+  switch (source) {
+    case DataSource::Server:
+      return sigen_api_fetch(out, detail);
+    case DataSource::Modbus:
+      return modbus_api_fetch(out, detail);
+    case DataSource::HomeAssistant:
+      // A Puck-calculated forecast is merged later; it never changes HA's live
+      // acquisition into a Modbus request.
+      return home_assistant_api_fetch(out, detail);
+  }
+  return FetchResult::NotConfigured;
+}
+
 void publish(const Snapshot& snapshot, const PollStatus& status) {
   if (xSemaphoreTake(s_lock, portMAX_DELAY) == pdTRUE) {
     s_snapshot = snapshot;
     s_status = status;
+    ++s_snapshot_generation;
     // Latched rather than left in the snapshot for readers to dig out: it is the
     // one field that is a property of the *site* rather than of this reading, and
     // the screen schedule needs it even while polls are failing. Keeping the last
@@ -122,17 +153,19 @@ void publish_status(const PollStatus& status) {
 
 void poll_task(void* /*argument*/) {
   PollStatus status;
+  HistoryBackfillRetry history_backfill;
 
-  // Read once, not per cycle: the source applies on the next boot (§D1), so it
-  // cannot change under this loop, and re-reading it would only invite the two
-  // paths to interleave.
-  const bool modbus = settings_get().source == DataSource::Modbus;
+  // Read once, not per cycle: the source applies on the next boot, so it cannot
+  // change under this loop, and re-reading it would invite paths to interleave.
+  const DataSource source = settings_get().source;
+  const SourceCapabilities capabilities = data_source_capabilities(source);
 
   for (;;) {
     Snapshot fetched;
     int http_status = 0;
-    const FetchResult result = modbus ? modbus_api_fetch(&fetched, &http_status)
-                                      : sigen_api_fetch(&fetched, &http_status);
+    const FetchResult result = fetch_source(source, &fetched, &http_status);
+    const SolarForecastSource ha_forecast_source =
+        settings_get().ha_solar_forecast_source;
 
     status.last_result = result;
     status.last_http_status = http_status;
@@ -142,13 +175,25 @@ void poll_task(void* /*argument*/) {
       // screens and history_record() see one complete snapshot rather than a
       // reading that grows a solar block a moment later. No I/O here — this is
       // the cached figures, refreshed further down between polls.
-      if (modbus) {
+      if (solar_forecast_uses_puck(source, ha_forecast_source)) {
         solar_api_apply(&fetched);
       }
       status.consecutive_failures = 0;
       status.last_ok_ms = millis();
       status.ever_succeeded = true;
       publish(fetched, status);
+      if (capabilities.today_history_backfill) {
+        // The cutoff is latched from the first successful HA reading. Recorder
+        // owns only earlier minutes; this and later live samples therefore win
+        // cleanly if the delayed request overlaps normal polling.
+        uint32_t local_midnight = 0;
+        uint32_t next_local_midnight = 0;
+        if (home_assistant_api_history_bounds(&local_midnight,
+                                              &next_local_midnight)) {
+          history_backfill.activate(local_midnight, next_local_midnight,
+                                    fetched.ts);
+        }
+      }
     } else {
       // Not configured is not a failure to back off from — there is simply
       // nothing to do until someone visits the settings page.
@@ -179,6 +224,47 @@ void poll_task(void* /*argument*/) {
       }
     }
 
+    // Recorder is optional enrichment. One bounded window runs after each live
+    // poll, so a long day cannot monopolise this task. Completed windows remain
+    // in HistoryBank; a retry resumes the failed window rather than starting at
+    // midnight. None of these outcomes changes PollStatus or the live Snapshot.
+    if (capabilities.today_history_backfill && history_backfill.due(millis())) {
+      const uint32_t window_start = history_backfill.window_start_ts();
+      const uint32_t window_end = history_backfill.window_end_ts();
+      char start_text[24];
+      char end_text[24];
+      format_utc_minute(window_start, start_text, sizeof(start_text));
+      format_utc_minute(window_end, end_text, sizeof(end_text));
+      Serial.printf("[ha-history] backfill window %u: %s–%s\n",
+                    static_cast<unsigned>(history_backfill.windows_completed() + 1),
+                    start_text, end_text);
+      int history_status = 0;
+      size_t points = 0;
+      const FetchResult history = home_assistant_api_fetch_history(
+          window_start, window_end, &history_status, &points);
+      const HistoryBackfillOutcome outcome =
+          history_backfill_outcome(history, history_status);
+      history_backfill.record(outcome, millis(), points);
+      // The Recorder parser, with its 768-byte object buffer, sits on this stack
+      // beside an HTTPS client when HA is on https://, and TASK_STACK_BYTES was
+      // sized before it existed. Reported each window so the headroom is measured
+      // on hardware rather than guessed at. ESP-IDF counts this in bytes.
+      Serial.printf("[ha-history] window %s, %u points, stack headroom %u B\n",
+                    fetch_result_name(history), static_cast<unsigned>(points),
+                    static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr) *
+                                          sizeof(StackType_t)));
+      if (history_backfill.finished() && history_backfill.succeeded()) {
+        Serial.printf("[ha-history] restored %u chart points from %u windows\n",
+                      static_cast<unsigned>(history_backfill.points_written()),
+                      static_cast<unsigned>(history_backfill.windows_completed()));
+      } else if (history_backfill.finished()) {
+        Serial.printf("[poll] Home Assistant Recorder stopped after %u windows: "
+                      "%s (http %d) — live charts continue\n",
+                      static_cast<unsigned>(history_backfill.windows_completed()),
+                      fetch_result_name(history), history_status);
+      }
+    }
+
     // Today's curve from the server, on its own slow cadence. Same reasoning as
     // updater_service() below: between fetches, with this task's client closed,
     // so two TLS sessions never overlap.
@@ -186,7 +272,7 @@ void poll_task(void* /*argument*/) {
     // Deliberately not folded into the failure counting above — this is the
     // chart's backdrop, not the reading. A server too old to have the endpoint
     // 404s here forever, and that must not make a working device look broken.
-    if (!modbus) {
+    if (capabilities.full_day_series) {
       const uint32_t now = millis();
       const bool due = s_last_day_ms == 0 || now - s_last_day_ms >= DAY_REFRESH_MS;
       if (due && status.ever_succeeded) {
@@ -222,6 +308,7 @@ void poll_task(void* /*argument*/) {
           s_loaded_offset = 0;
           s_loaded_date = String();
           s_day_valid = false;
+          ++s_day_generation;
           xSemaphoreGive(s_lock);
         }
       } else if (changed && s_day_valid) {
@@ -231,6 +318,7 @@ void poll_task(void* /*argument*/) {
         // same treatment.
         if (xSemaphoreTake(s_lock, portMAX_DELAY) == pdTRUE) {
           s_day_valid = false;
+          ++s_day_generation;
           xSemaphoreGive(s_lock);
         }
       }
@@ -253,6 +341,7 @@ void poll_task(void* /*argument*/) {
               s_day_valid = true;
               s_loaded_offset = wanted;
               s_loaded_date = date;
+              ++s_day_generation;
               xSemaphoreGive(s_lock);
             }
             s_last_dated_ms = now;
@@ -274,8 +363,9 @@ void poll_task(void* /*argument*/) {
     // The forecast fetch keeps the same company for the same reason: it is
     // another TLS session on this stack, and it decides for itself whether one is
     // due — at most one an hour. Server source excluded because there the
-    // forecast comes in the summary payload already.
-    if (modbus) {
+    // forecast comes in the summary payload already. HA can explicitly opt into
+    // this same cache without changing its live acquisition path.
+    if (solar_forecast_uses_puck(source, ha_forecast_source)) {
       solar_api_service();
     }
     updater_service();
@@ -309,11 +399,11 @@ void poller_begin() {
     return;
   }
   s_lock = xSemaphoreCreateMutex();
-  const bool modbus = settings_get().source == DataSource::Modbus;
+  const DataSource source = settings_get().source;
   xTaskCreatePinnedToCore(poll_task, "puck_poll", TASK_STACK_BYTES, nullptr, TASK_PRIORITY,
                           nullptr, TASK_CORE);
   Serial.printf("[poll] task started on core %d, source %s, stack %u\n",
-                static_cast<int>(TASK_CORE), modbus ? "modbus" : "server", TASK_STACK_BYTES);
+                static_cast<int>(TASK_CORE), data_source_name(source), TASK_STACK_BYTES);
 }
 
 // Both readers wait for the lock rather than giving up after a timeout.
@@ -328,12 +418,15 @@ void poller_begin() {
 // Waiting is safe: the lock is only ever held for a struct copy, by code that
 // does no I/O and cannot block, and publish() already takes it with
 // portMAX_DELAY. There is no path that can hold it long enough to matter.
-bool poller_snapshot(Snapshot* out) {
+bool poller_snapshot(Snapshot* out, uint32_t* generation) {
   if (s_lock == nullptr || out == nullptr) {
     return false;
   }
   bool have = false;
   if (xSemaphoreTake(s_lock, portMAX_DELAY) == pdTRUE) {
+    if (generation != nullptr) {
+      *generation = s_snapshot_generation;
+    }
     if (s_snapshot.valid) {
       *out = s_snapshot;
       have = true;
@@ -352,12 +445,15 @@ PollStatus poller_status() {
   return copy;
 }
 
-bool poller_day_snapshot(Snapshot* out) {
+bool poller_day_snapshot(Snapshot* out, uint32_t* generation) {
   if (out == nullptr) {
     return false;
   }
   bool valid = false;
   if (xSemaphoreTake(s_lock, portMAX_DELAY) == pdTRUE) {
+    if (generation != nullptr) {
+      *generation = s_day_generation;
+    }
     // Only when the loaded day is the one being asked for: between a button press
     // and its fetch landing, the previous day is still in there and showing it
     // under the new day's date would be worse than showing live.

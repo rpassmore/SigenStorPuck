@@ -15,7 +15,7 @@
 
 // --------------------------------------------------------------- firmware ---
 
-#define PUCK_FW_VERSION "0.12.1"
+#define PUCK_FW_VERSION "0.13.0"
 
 // ---------------------------------------------------------------- display ---
 
@@ -113,6 +113,15 @@ static constexpr int PUCK_KW_DECIMALS = 2;
 // How far back the PWR button may step through past days. The server keeps far
 // more than this; the limit is what is useful to reach one press at a time.
 static constexpr int PUCK_MAX_DAYS_BACK = 7;
+
+// How long a past day stays on screen with nobody touching the device before it
+// returns to today by itself. A past day is something being looked at, not a place
+// to leave a wall display: one press of PWR — including the natural one of pressing
+// it to brighten a dimmed screen — used to park the device on yesterday until
+// somebody pressed BOOT, and across midnight it simply stayed a day behind. Long
+// enough to read four figures without being pulled away mid-glance; any swipe or
+// press starts it again.
+static constexpr uint32_t PUCK_DAY_RETURN_S = 120;
 
 // How long a button keeps the screen up during a scheduled off period, before it
 // goes dark again. Long enough to read a figure off it in the dark, short enough

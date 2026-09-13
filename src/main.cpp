@@ -26,8 +26,9 @@
 
 namespace {
 
-// The UI is refreshed on a timer rather than whenever a poll lands, so the render
-// rate is decoupled from the network entirely.
+// Poller/network state is observed at a humanly prompt cadence. Snapshot and day
+// generations below keep this from becoming a 4 Hz rewrite of unchanged LVGL
+// objects; lv_timer_handler() still runs every loop for touch and animation.
 constexpr uint32_t UI_REFRESH_MS = 250;
 
 // The PMIC is read over I2C, so at a human rate rather than per frame.
@@ -106,7 +107,7 @@ void refresh_overlay(bool have_snapshot, const PollStatus& status) {
       break;
   }
 
-  const bool modbus = settings_get().source == DataSource::Modbus;
+  const DataSource source = settings_get().source;
 
   // One address per line rather than run together with "or": these are things to
   // be typed, and a reader picking the one their phone can resolve should be able
@@ -126,8 +127,13 @@ void refresh_overlay(bool have_snapshot, const PollStatus& status) {
     // Different instruction per source: there is no enrolment URL to paste when
     // the Puck talks to the plant directly, and telling someone to find one would
     // send them looking for something that does not exist.
-    detail = modbus ? "Scan, or open this and set the plant's IP address"
-                    : "Scan, or open this and paste the enrolment URL";
+    if (source == DataSource::Modbus) {
+      detail = "Scan, or open this and set the plant's IP address";
+    } else if (source == DataSource::HomeAssistant) {
+      detail = "Scan, or open this and configure Home Assistant";
+    } else {
+      detail = "Scan, or open this and paste the enrolment URL";
+    }
     set_overlay("Not configured", where.c_str(), detail.c_str(), true);
     return;
   }
@@ -135,7 +141,10 @@ void refresh_overlay(bool have_snapshot, const PollStatus& status) {
   // A revoked token is not a network fault and will never fix itself, so it says
   // so rather than sitting on "waiting for data" forever.
   if (status.last_result == FetchResult::Unauthorised) {
-    set_overlay("Re-enrol needed", where.c_str(), "The kiosk token was revoked. Re-enrol at");
+    set_overlay(source == DataSource::HomeAssistant ? "HA token rejected" : "Re-enrol needed",
+                where.c_str(), source == DataSource::HomeAssistant
+                                     ? "Check the Home Assistant token at"
+                                     : "The kiosk token was revoked. Re-enrol at");
     return;
   }
 
@@ -146,7 +155,13 @@ void refresh_overlay(bool have_snapshot, const PollStatus& status) {
       // Naming what is unreachable, because on the Modbus path "the server" is
       // not a thing that exists and the first place to look is the Sigen app's
       // Modbus whitelist.
-      detail = modbus ? String("Cannot reach the plant\n") : String("Cannot reach the server\n");
+      if (source == DataSource::Modbus) {
+        detail = "Cannot reach the plant\n";
+      } else if (source == DataSource::HomeAssistant) {
+        detail = "Cannot read Home Assistant\n";
+      } else {
+        detail = "Cannot reach the server\n";
+      }
       detail += fetch_result_name(status.last_result);
       set_overlay("No data", nullptr, detail.c_str());
     } else {
@@ -225,26 +240,45 @@ void apply_screen_schedule() {
 }
 
 void refresh_ui() {
+  static bool first = true;
+  static uint32_t seen_snapshot_generation = 0;
+  static uint32_t seen_day_generation = 0;
+  static int seen_day_offset = 0;
+
   Snapshot snapshot;
-  const bool have = poller_snapshot(&snapshot);
+  uint32_t snapshot_generation = 0;
+  const bool have = poller_snapshot(&snapshot, &snapshot_generation);
   const PollStatus status = poller_status();
+  const bool snapshot_changed =
+      have && (first || snapshot_generation != seen_snapshot_generation);
 
   // The viewed day before the live reading, so one pass never draws the new day's
   // chart against the old day's figures.
   Snapshot day;
-  if (poller_day_snapshot(&day)) {
-    ui_update_day(day);
-  } else if (ui_day_offset() != 0) {
-    // Asked for but not here yet. Dashes and LOADING, not the live reading:
-    // falling back to live flashed today's figures under a past date on every
-    // step between days.
-    ui_set_day_loading();
-  } else {
-    ui_clear_day();
+  uint32_t day_generation = 0;
+  const bool have_day = poller_day_snapshot(&day, &day_generation);
+  const int day_offset = ui_day_offset();
+  if (first || day_generation != seen_day_generation ||
+      day_offset != seen_day_offset) {
+    if (have_day) {
+      ui_update_day(day);
+    } else if (day_offset != 0) {
+      // Asked for but not here yet. Dashes and LOADING, not the live reading:
+      // falling back to live flashed today's figures under a past date on every
+      // step between days.
+      ui_set_day_loading();
+    } else {
+      ui_clear_day();
+    }
   }
-  if (have) {
+  if (snapshot_changed) {
     ui_update(snapshot);
   }
+
+  seen_snapshot_generation = snapshot_generation;
+  seen_day_generation = day_generation;
+  seen_day_offset = day_offset;
+  first = false;
   refresh_overlay(have, status);
 }
 
@@ -299,14 +333,24 @@ void setup() {
   // are built once, so the masks and the data source both apply on the next boot
   // — same as `orientation`.
   UiConfig ui_config;
-  ui_config.with_server_screens = settings_get().source != DataSource::Modbus;
+  const SourceCapabilities source_capabilities =
+      data_source_capabilities(settings_get().source);
+  ui_config.with_detailed_screens = source_capabilities.detailed_flows;
   ui_config.visible = settings_get().screens_visible;
   ui_config.rotate = settings_get().screens_rotate;
+  {
+    const Settings& s = settings_get();
+    const auto mapped = [&s](HaEntity entity) {
+      return !s.ha_entities[static_cast<size_t>(entity)].isEmpty();
+    };
+    ui_config.solar_figures = solar_figures_supplied(
+        s.source, s.ha_solar_forecast_source, mapped(HaEntity::ForecastRemaining),
+        mapped(HaEntity::ForecastPercentage), mapped(HaEntity::ForecastPeak));
+  }
   ui_create(lv_scr_act(), ui_config);
-  // No dated API behind the Modbus source — it has daily counters and no history
-  // to step into — so the buttons refuse rather than moving an indicator over
-  // figures that will never change.
-  ui_set_day_stepping(ui_config.with_server_screens);
+  // Sources without a dated API have no history to step into, so the buttons
+  // refuse rather than moving an indicator over figures that will never change.
+  ui_set_day_stepping(source_capabilities.historical_days);
   display_set_brightness(settings_get().brightness);
   // A named boot screen rather than a bare word: on a device that takes a couple
   // of seconds to find WiFi, this is the only proof it is alive.
@@ -322,6 +366,7 @@ void setup() {
   ui_set_rotate_interval(settings_get().rotate_s);
   ui_set_rotate_enabled(settings_get().rotate_enabled);
   ui_set_sweep_interval(settings_get().sweep_min);
+  ui_set_day_return(PUCK_DAY_RETURN_S);
 
   net_begin();
   poller_begin();
