@@ -15,7 +15,7 @@ struct GradientConfig {
 GradientConfig s_gradient_config;
 
 // Gradient Anchor Colors
-static constexpr uint32_t POWER_COLOUR_WHITE  = 0xFFFFFF;
+static constexpr uint32_t POWER_COLOUR_WHITE  = 0xF2F2F7;
 static constexpr uint32_t POWER_COLOUR_IMP_MID  = 0xFFBF00;
 static constexpr uint32_t POWER_COLOUR_IMP_HIGH    = 0xFF0000;
 
