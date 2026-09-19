@@ -156,6 +156,14 @@ struct Settings {
   // Turning it off stops every outbound call beyond your own server. Installing
   // is a separate, manual act either way.
   bool check_updates = false;
+
+  // --- Octopus Energy Tariffs -----------------------------------------------
+  // Product codes selected for import and export electricity rates, and the
+  // time of day (minutes from midnight local time) to fetch daily rate forecasts.
+  String tariff_import_code;
+  String tariff_export_code;
+  // Default to 16:00 (960 min) when Octopus Agile/Tracker tomorrow rates are published
+  uint16_t tariff_fetch_time_min = 960;
 };
 
 // Loads from NVS, falling back to defaults. Safe to call before WiFi is up.
@@ -229,6 +237,9 @@ bool settings_set_check_updates(bool enabled);
 // to reboot to see it corrected would make the form untestable.
 bool settings_set_solar(bool location_set, float latitude, float longitude, float system_loss,
                         float inverter_cap_kw, const PvArray* arrays, size_t count);
+
+bool settings_set_tariffs(const String& import_code, const String& export_code,
+                         uint16_t fetch_time_min);
 
 // True once there is enough stored to be worth polling: a base URL and a token
 // on the server path, a host on the Modbus path.

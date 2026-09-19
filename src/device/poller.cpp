@@ -8,6 +8,7 @@
 #include "settings.h"
 #include "sigen_api.h"
 #include "solar_api.h"
+#include "tariff_api.h"
 #include "updater.h"
 #include "ui/ui.h"
 
@@ -256,6 +257,7 @@ void poll_task(void* /*argument*/) {
     if (modbus) {
       solar_api_service();
     }
+    tariff_api_service();
     updater_service();
 
     uint32_t wait_ms = settings_get().poll_interval_s * 1000;

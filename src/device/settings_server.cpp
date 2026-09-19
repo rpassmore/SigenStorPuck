@@ -12,6 +12,7 @@
 #include "screen_window.h"
 #include "sigen_api.h"
 #include "solar_api.h"
+#include "tariff_api.h"
 #include "updater.h"
 #include "touch.h"
 #include "ui/ui.h"
@@ -395,6 +396,73 @@ String page(const String& message, bool message_is_error) {
     html += String(array.azimuth_deg, 0);
     html += "></div></div>";
   }
+  html += "<button type=submit>Save</button></form>";
+
+  // --- Tariffs -------------------------------------------------------------
+  html += "<h2>Electricity Tariffs</h2>";
+  html += "<p class=hint>";
+  if (!tariff_api_ready()) {
+    switch (tariff_api_last_result()) {
+      case FetchResult::Ok:
+        html += "Tariffs loaded from Octopus Energy.";
+        break;
+      case FetchResult::NoNetwork:
+        html += "Connecting to network to fetch tariffs...";
+        break;
+      case FetchResult::ClockUnset:
+        html += "Waiting for NTP time sync to fetch tariffs...";
+        break;
+      default:
+        html += "Status: ";
+        html += fetch_result_name(tariff_api_last_result());
+        html += ". Retrying.";
+        break;
+    }
+  } else {
+    html += "Tariffs available from Octopus Energy.";
+  }
+  html += "</p>";
+
+  html += "<form method=post action=/tariffs>";
+  html += "<label for=trfimp>Import Tariff</label>";
+  html += "<select id=trfimp name=trfimp>";
+  html += "<option value=''" + String(settings.tariff_import_code.isEmpty() ? " selected" : "") + ">None / Unconfigured</option>";
+  const auto& imports = tariff_api_get_import_products();
+  bool found_imp = false;
+  for (const auto& prod : imports) {
+    const bool sel = (prod.code == settings.tariff_import_code);
+    if (sel) found_imp = true;
+    html += "<option value='" + escape_html(prod.code) + "'" + (sel ? " selected" : "") + ">" +
+            escape_html(prod.display_name) + " (" + escape_html(prod.code) + ")</option>";
+  }
+  if (!settings.tariff_import_code.isEmpty() && !found_imp) {
+    html += "<option value='" + escape_html(settings.tariff_import_code) + "' selected>" +
+            escape_html(settings.tariff_import_code) + " (Custom / Stored)</option>";
+  }
+  html += "</select>";
+
+  html += "<label for=trfexp>Export Tariff</label>";
+  html += "<select id=trfexp name=trfexp>";
+  html += "<option value=''" + String(settings.tariff_export_code.isEmpty() ? " selected" : "") + ">None / Unconfigured</option>";
+  const auto& exports = tariff_api_get_export_products();
+  bool found_exp = false;
+  for (const auto& prod : exports) {
+    const bool sel = (prod.code == settings.tariff_export_code);
+    if (sel) found_exp = true;
+    html += "<option value='" + escape_html(prod.code) + "'" + (sel ? " selected" : "") + ">" +
+            escape_html(prod.display_name) + " (" + escape_html(prod.code) + ")</option>";
+  }
+  if (!settings.tariff_export_code.isEmpty() && !found_exp) {
+    html += "<option value='" + escape_html(settings.tariff_export_code) + "' selected>" +
+            escape_html(settings.tariff_export_code) + " (Custom / Stored)</option>";
+  }
+  html += "</select>";
+
+  html += "<label for=trftime>Daily Fetch Time</label>";
+  html += "<input id=trftime name=trftime type=time value='";
+  html += clock_text(settings.tariff_fetch_time_min);
+  html += "'>";
+  html += "<p class=hint>Time of day (local time) when daily rates for tomorrow will be fetched from Octopus Energy.</p>";
   html += "<button type=submit>Save</button></form>";
 
   html += "<h2>Display</h2><form method=post action=/display><div class=row>";
@@ -920,6 +988,21 @@ void handle_solar() {
             false);
 }
 
+void handle_tariffs() {
+  const String import_code = s_server.arg("trfimp");
+  const String export_code = s_server.arg("trfexp");
+  uint16_t fetch_time = 960;
+  if (!clock_minutes(s_server.arg("trftime"), &fetch_time)) {
+    fetch_time = 960;
+  }
+  if (!settings_set_tariffs(import_code, export_code, fetch_time)) {
+    send_page("Could not store tariff settings.", true);
+    return;
+  }
+  poller_wake();
+  send_page("Tariff settings saved.", false);
+}
+
 void handle_restart() {
   send_html(200,
             "<!doctype html><p>Restarting. This page will stop responding for a "
@@ -953,6 +1036,7 @@ void settings_server_begin() {
   s_server.on("/hostname", HTTP_POST, handle_hostname);
   s_server.on("/modbus", HTTP_POST, handle_modbus);
   s_server.on("/solar", HTTP_POST, handle_solar);
+  s_server.on("/tariffs", HTTP_POST, handle_tariffs);
   s_server.on("/restart", HTTP_POST, handle_restart);
   s_server.on("/test", HTTP_POST, handle_test);
   s_server.on("/display", HTTP_POST, handle_display);
