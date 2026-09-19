@@ -28,6 +28,7 @@ enum PuckScreen : uint8_t {
   // silently turn this into the flows screen on every Puck already in the field.
   // Swipe order is a separate list; see PUCK_SCREEN_ORDER.
   PUCK_SCREEN_LOAD,
+  PUCK_SCREEN_RATES,
   PUCK_SCREEN_COUNT,
 };
 
@@ -36,7 +37,7 @@ enum PuckScreen : uint8_t {
 // belongs at the end.
 static constexpr PuckScreen PUCK_SCREEN_ORDER[PUCK_SCREEN_COUNT] = {
     PUCK_SCREEN_POWER, PUCK_SCREEN_BATTERY, PUCK_SCREEN_SOLAR, PUCK_SCREEN_LOAD,
-    PUCK_SCREEN_FLOWS, PUCK_SCREEN_COST,    PUCK_SCREEN_SETTINGS,
+    PUCK_SCREEN_RATES, PUCK_SCREEN_FLOWS, PUCK_SCREEN_COST, PUCK_SCREEN_SETTINGS,
 };
 
 // Screens the Modbus source cannot fill: the cost screen needs tariff tables
