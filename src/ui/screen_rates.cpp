@@ -1,10 +1,10 @@
 #include "screen_rates.h"
 
 #include <stdio.h>
+#include <time.h>
 #include <algorithm>
 
 #include "board_config.h"
-#include "device/tariff_rates.h"
 #include "format.h"
 #include "theme.h"
 
@@ -112,12 +112,12 @@ lv_obj_t* screen_rates_create(lv_obj_t* parent) {
   return s_root;
 }
 
-void screen_rates_update(const Snapshot& /*snapshot*/) {
+void screen_rates_update(const Snapshot& snapshot) {
   if (s_root == nullptr) {
     return;
   }
 
-  const DayTariffRates& rates = tariff_rates_get();
+  const DayTariffRates& rates = snapshot.day_rates;
   bool has_data = rates.import_valid || rates.export_valid;
 
   if (!has_data) {
@@ -133,12 +133,28 @@ void screen_rates_update(const Snapshot& /*snapshot*/) {
   lv_obj_clear_flag(s_time_legend, LV_OBJ_FLAG_HIDDEN);
   lv_obj_add_flag(s_unconfigured, LV_OBJ_FLAG_HIDDEN);
 
+  // Position vertical line cursor at active slot index based on timestamp
+  uint8_t slot_idx = 0;
+  time_t now = snapshot.ts != 0 ? static_cast<time_t>(snapshot.ts) : time(nullptr);
+  struct tm tm_now = {};
+  if (localtime_r(&now, &tm_now) != nullptr) {
+    uint8_t calculated = (tm_now.tm_hour * 2) + (tm_now.tm_min >= 30 ? 1 : 0);
+    slot_idx = calculated < 48 ? calculated : 47;
+  }
+
   // Update current textual rates
   float cur_imp = 0.0f, cur_exp = 0.0f;
-  tariff_rates_get_current(&cur_imp, &cur_exp);
+  bool imp_known = rates.import_valid && rates.import_slots[slot_idx].valid;
+  bool exp_known = rates.export_valid && rates.export_slots[slot_idx].valid;
+  if (imp_known) {
+    cur_imp = rates.import_slots[slot_idx].pence;
+  }
+  if (exp_known) {
+    cur_exp = rates.export_slots[slot_idx].pence;
+  }
 
   char buf[32];
-  if (rates.import_valid) {
+  if (rates.import_valid && imp_known) {
     snprintf(buf, sizeof(buf), "Imp: %.1fp", cur_imp);
     lv_label_set_text(s_imp_label, buf);
     lv_obj_clear_flag(s_imp_label, LV_OBJ_FLAG_HIDDEN);
@@ -146,7 +162,7 @@ void screen_rates_update(const Snapshot& /*snapshot*/) {
     lv_obj_add_flag(s_imp_label, LV_OBJ_FLAG_HIDDEN);
   }
 
-  if (rates.export_valid) {
+  if (rates.export_valid && exp_known) {
     snprintf(buf, sizeof(buf), "Exp: %.1fp", cur_exp);
     lv_label_set_text(s_exp_label, buf);
     lv_obj_clear_flag(s_exp_label, LV_OBJ_FLAG_HIDDEN);
@@ -188,9 +204,6 @@ void screen_rates_update(const Snapshot& /*snapshot*/) {
     }
   }
 
-  // Position vertical line cursor at active slot index
-  uint8_t slot_idx = tariff_rates_get_current_slot();
   lv_chart_set_cursor_point(s_chart, s_cursor, NULL, slot_idx);
-
   lv_chart_refresh(s_chart);
 }

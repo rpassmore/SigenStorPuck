@@ -180,6 +180,9 @@ void poll_task(void* /*argument*/) {
       if (solar_forecast_uses_puck(source, ha_forecast_source)) {
         solar_api_apply(&fetched);
       }
+      if (!fetched.day_rates.import_valid && !fetched.day_rates.export_valid) {
+        fetched.day_rates = tariff_rates_get();
+      }
       status.consecutive_failures = 0;
       status.last_ok_ms = millis();
       status.ever_succeeded = true;

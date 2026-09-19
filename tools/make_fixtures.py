@@ -33,9 +33,32 @@ def plant(pv, batt, dc_out=0.0):
     return round(pv - batt - dc_out, 2)
 
 
+def generate_day_rates(import_base=15.0, export_base=8.0):
+    import_slots = []
+    export_slots = []
+    for slot in range(48):
+        if 32 <= slot <= 38:  # 16:00 to 19:00 peak
+            imp = round(import_base * 1.8, 1)
+            exp = round(export_base * 1.5, 1)
+        elif 0 <= slot <= 10:  # 00:00 to 05:00 cheap overnight
+            imp = round(import_base * 0.5, 1)
+            exp = round(export_base * 0.6, 1)
+        else:
+            imp = round(import_base + (slot % 4) * 0.5, 1)
+            exp = round(export_base + (slot % 3) * 0.3, 1)
+        import_slots.append(imp)
+        export_slots.append(exp)
+    return {
+        "import_valid": True,
+        "export_valid": True,
+        "import": import_slots,
+        "export": export_slots,
+    }
+
+
 def summary(*, age=3, ok=True, pv=0.0, grid=0.0, batt=0.0, ev=0.0, off_grid=False,
             soc=50.0, soh=99.0, capacity=16.0, temp=24.5, eta=None,
-            today=..., cost=..., alarms=0, home_override=...):
+            today=..., cost=..., day_rates=..., alarms=0, home_override=...):
     doc = {
         "v": 1,
         "ts": TS,
@@ -71,6 +94,7 @@ def summary(*, age=3, ok=True, pv=0.0, grid=0.0, batt=0.0, ev=0.0, off_grid=Fals
                 {"from": TS + 3 * HALF_HOUR, "p": 7.5},
             ],
         } if cost is ... else cost,
+        "day_rates": generate_day_rates() if day_rates is ... else day_rates,
         "alarms": alarms,
     }
     return doc
