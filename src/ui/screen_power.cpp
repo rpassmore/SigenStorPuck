@@ -452,11 +452,11 @@ lv_obj_t* screen_power_create(lv_obj_t* parent) {
   lv_obj_center(s_root);
 
   
-  // State of charge around the bezel: always visible, never in the way.
+  // Power import/export ring around the bezel: always visible, never in the way.
   s_ring = lv_arc_create(s_root);
   lv_obj_set_size(s_ring, PUCK_RING_DIAMETER, PUCK_RING_DIAMETER);
   lv_obj_center(s_ring);
-  lv_arc_set_rotation(s_ring, -90);  // zero at the left
+  lv_arc_set_rotation(s_ring, 270);  // zero at the left
   lv_arc_set_range(s_ring, -8000, 8000);
   lv_arc_set_mode(s_ring, LV_ARC_MODE_SYMMETRICAL); //Set the mode to SYMMETRICAL so it expands outwards from the centre of the range (0)
   lv_arc_set_value(s_ring, 0);
