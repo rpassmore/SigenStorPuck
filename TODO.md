@@ -1,4 +1,20 @@
 
+# Hardware Description
+Summary: Guition ESP32-4848S040 
+
+Working Configuration Rules:
+Feature	Setting
+Display	ST7701, 480×480, RGB parallel, init table from sand1812
+PCLK	Polarity inverted (active_neg=1)
+Touch I2C	SDA=19, SCL=45 (NOT 20 — GPIO20 is display's G1 line)
+Touch IC	GT911 at address 0x5D, point register at 0x814F
+Touch Byte Order	Little-endian (standard datasheet convention)
+Touch I2C Pattern	STOP-then-separate-request (not repeated-start)
+Backlight	PWM on GPIO38
+No PMIC	Battery indicator disabled gracefully
+No Buttons	Stubs; swipe gestures still work
+
+
 # Current Tasks
 We need add to add support for a new page in our sigenstorPuck app, the page will display the days import and export electricity rates:
 
@@ -8,10 +24,13 @@ We need add to add support for a new page in our sigenstorPuck app, the page wil
 - The settings UI also needs an entry where the user can configure the time at which the tariff rates for the day will be fetched from the internet. 
 
 # New Page
+## Fetch Days rates
 - Once a day the electricity rates will be fetched for the users selected tariffs from the internet this fetch will performed at the users configured time. The data fetched is likely to be in half hourly values for the day.  
+## Display days rates graph
 - Page will display the days import and export electricity rates in a graph, using the existing graph library in the code base. The graph will plot import and export rates (import in green/ export in amber) on the Y axis with time (in half hour divisions) on the X axis 
-- The graph of the days electrictiy rates will feature a verical line that indicates the current time position across the graph.
-- An textual indication of the current import and export rate (in pence/kWh) will be displayed on page. 
+- The graph of the days electrictiy rates will feature a vertical line that indicates the rates in effect on the graph a thte current half slot of the day.
+## Display Current rates
+- A textual indication of the current import and export rate (in pence/kWh) will be displayed on page. 
 
 
 

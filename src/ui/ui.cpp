@@ -385,7 +385,7 @@ lv_obj_t* ui_create(lv_obj_t* parent, const UiConfig& config) {
         break;
       case PUCK_SCREEN_RATES:
         screen_rates_create(s_tiles[i]);
-        break;  
+        break;
       case PUCK_SCREEN_SETTINGS:
         screen_settings_create(s_tiles[i]);
         break;
@@ -560,7 +560,7 @@ void refresh_screens() {
         break;
       case PUCK_SCREEN_RATES:
         screen_rates_update(day);
-        break;  
+        break;
       default:
         break;
     }
