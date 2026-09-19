@@ -120,6 +120,44 @@ bool snapshot_parse(const char* json, size_t length, Snapshot* out) {
     ++parsed.cost.next_count;
   }
 
+  JsonVariantConst day_rates = doc["day_rates"];
+  if (day_rates.is<JsonObjectConst>()) {
+    parsed.day_rates.import_valid = day_rates["import_valid"] | false;
+    parsed.day_rates.export_valid = day_rates["export_valid"] | false;
+
+    JsonArrayConst imp = day_rates["import"].as<JsonArrayConst>();
+    if (!imp.isNull()) {
+      size_t idx = 0;
+      for (JsonVariantConst val : imp) {
+        if (idx >= 48) break;
+        if (val.is<JsonObjectConst>()) {
+          parsed.day_rates.import_slots[idx].pence = val["pence"] | val["p"] | 0.0f;
+          parsed.day_rates.import_slots[idx].valid = val["valid"] | true;
+        } else if (!val.isNull()) {
+          parsed.day_rates.import_slots[idx].pence = val.as<float>();
+          parsed.day_rates.import_slots[idx].valid = true;
+        }
+        idx++;
+      }
+    }
+
+    JsonArrayConst exp = day_rates["export"].as<JsonArrayConst>();
+    if (!exp.isNull()) {
+      size_t idx = 0;
+      for (JsonVariantConst val : exp) {
+        if (idx >= 48) break;
+        if (val.is<JsonObjectConst>()) {
+          parsed.day_rates.export_slots[idx].pence = val["pence"] | val["p"] | 0.0f;
+          parsed.day_rates.export_slots[idx].valid = val["valid"] | true;
+        } else if (!val.isNull()) {
+          parsed.day_rates.export_slots[idx].pence = val.as<float>();
+          parsed.day_rates.export_slots[idx].valid = true;
+        }
+        idx++;
+      }
+    }
+  }
+
   *out = parsed;
   return true;
 }

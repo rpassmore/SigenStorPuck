@@ -203,6 +203,15 @@ std::string describe(const Snapshot& snapshot) {
     text += "\n";
   }
 
+  if (!snapshot.day_rates.import_valid && !snapshot.day_rates.export_valid) {
+    text += "RATES  no day rates\n";
+  } else {
+    snprintf(line, sizeof(line), "RATES  imp %s  exp %s\n",
+             snapshot.day_rates.import_valid ? "ok" : "n/a",
+             snapshot.day_rates.export_valid ? "ok" : "n/a");
+    text += line;
+  }
+
   return text;
 }
 

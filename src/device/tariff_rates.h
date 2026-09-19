@@ -3,22 +3,9 @@
 
 #pragma once
 
-#include <Arduino.h>
 #include <time.h>
 #include "fetch_result.h"
-
-struct RateSlot {
-  float pence = 0.0f;
-  bool valid = false;
-};
-
-struct DayTariffRates {
-  RateSlot import_slots[48];
-  RateSlot export_slots[48];
-  bool import_valid = false;
-  bool export_valid = false;
-  time_t fetched_time = 0;
-};
+#include "snapshot.h"
 
 // Periodic background service called from poll_task.
 // Fetches rates at user-configured time or when cache is invalid.
