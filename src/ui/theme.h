@@ -20,6 +20,8 @@ static constexpr uint32_t PUCK_COLOUR_TRACK = 0x2C2C2E;  // unlit arcs, hairline
 // exactly when a glanceable display should stay stable. Direction is carried by
 // the flow animation and a word instead — which also survives being read by
 // someone who cannot separate red from green.
+static constexpr uint32_t PUCK_COLOUR_IMPORT = 0xE6CAF7;
+static constexpr uint32_t PUCK_COLOUR_EXPORT = 0xCE2093;
 static constexpr uint32_t PUCK_COLOUR_SOLAR = 0xFFD60A;
 static constexpr uint32_t PUCK_COLOUR_GRID = 0x0A84FF;
 static constexpr uint32_t PUCK_COLOUR_BATTERY = 0x30D158;
