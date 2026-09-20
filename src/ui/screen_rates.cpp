@@ -4,21 +4,36 @@
 #include <time.h>
 #include <algorithm>
 
+#include "chart_band.h"
 #include "board_config.h"
 #include "format.h"
 #include "theme.h"
 
 namespace {
+// Geometry copied from screens 2 and 3 rather than derived again: these three are
+// one family, and a figure that sits four pixels lower here than there is the
+// kind of thing you only notice as a wobble when swiping between them.
+constexpr lv_coord_t BAND_WIDTH = PUCK_LCD_WIDTH;
+constexpr lv_coord_t BAND_HEIGHT = 156;
+constexpr lv_coord_t BAND_Y = 90;
+constexpr lv_coord_t BAND_CLIP_RADIUS = PUCK_RING_DIAMETER / 2 - PUCK_RING_WIDTH - 4;
+// Lower than the other two: this band is drawn in the home colour, which is very
+// nearly white, and white at a given opacity reads far brighter than the yellow
+// or green they use. Matching the number would not match the weight.
+constexpr lv_opa_t BAND_GHOST = 80;
+constexpr uint8_t BAND_SMOOTHING = 15;
 
 lv_obj_t* s_root = nullptr;
+lv_obj_t* s_band = nullptr;
 lv_obj_t* s_title = nullptr;
+lv_obj_t* s_rate_now_imp = nullptr;
 lv_obj_t* s_rates_header = nullptr;
 lv_obj_t* s_imp_label = nullptr;
 lv_obj_t* s_exp_label = nullptr;
-lv_obj_t* s_chart = nullptr;
-lv_chart_series_t* s_series_import = nullptr;
-lv_chart_series_t* s_series_export = nullptr;
-lv_chart_cursor_t* s_cursor = nullptr;
+// lv_obj_t* s_chart = nullptr;
+// lv_chart_series_t* s_series_import = nullptr;
+// lv_chart_series_t* s_series_export = nullptr;
+// lv_chart_cursor_t* s_cursor = nullptr;
 lv_obj_t* s_unconfigured = nullptr;
 lv_obj_t* s_time_legend = nullptr;
 
@@ -44,9 +59,50 @@ lv_obj_t* screen_rates_create(lv_obj_t* parent) {
   lv_obj_set_style_bg_color(s_root, lv_color_hex(PUCK_COLOUR_BG), LV_PART_MAIN);
   lv_obj_set_style_bg_opa(s_root, LV_OPA_COVER, LV_PART_MAIN);
 
+
+  // No arc at the bezel, deliberately — see the note in the header.
+  s_band = chart_band_create(s_root, HistorySeries::Load, PUCK_COLOUR_HOME);
+  if (s_band != nullptr) {
+    lv_obj_set_size(s_band, BAND_WIDTH, BAND_HEIGHT);
+    lv_obj_align(s_band, LV_ALIGN_CENTER, 0, BAND_Y);
+    // Autoscaled: what a house draws has no rated ceiling to be a fraction of.
+    chart_band_set_range(s_band, 0.0f, 0.0f);
+    chart_band_set_intensity(s_band, BAND_GHOST);
+    chart_band_set_bezel_clip(s_band, BAND_CLIP_RADIUS);
+    chart_band_set_smoothing(s_band, BAND_SMOOTHING);
+  }
+
+
   s_title = make_label(s_root, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED);
-  lv_label_set_text(s_title, "DAY TARIFF RATES");
+  lv_label_set_text(s_title, "TARIFF RATES");
   lv_obj_align(s_title, LV_ALIGN_CENTER, 0, -170);
+
+  s_rate_now_imp = make_label(s_root, PUCK_FONT_BODY, PUCK_COLOUR_TEXT);
+  lv_label_set_text(s_rate_now_imp, "--p");
+  lv_obj_align(s_rate_now_imp, LV_ALIGN_CENTER, 0, -12);
+
+  // s_slots_box = make_group(s_root);
+  // lv_obj_set_size(s_slots_box, ROW_WIDTH, LV_SIZE_CONTENT);
+  // lv_obj_set_flex_flow(s_slots_box, LV_FLEX_FLOW_COLUMN);
+  // lv_obj_set_style_pad_row(s_slots_box, 6, LV_PART_MAIN);
+  // lv_obj_align(s_slots_box, LV_ALIGN_CENTER, 0, 90);
+
+  // for (size_t i = 0; i < SNAPSHOT_MAX_TARIFF_SLOTS; ++i) {
+  //   lv_obj_t* row = make_group(s_slots_box);
+  //   lv_obj_set_size(row, ROW_WIDTH, LV_SIZE_CONTENT);
+  //   lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+  //   lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+  //                         LV_FLEX_ALIGN_CENTER);
+  //   s_slot_rows[i] = row;
+
+  //   s_slot_when[i] = make_label(row, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED);
+  //   lv_label_set_text(s_slot_when[i], "");
+
+  //   s_slot_price[i] = make_label(row, PUCK_FONT_BODY, PUCK_COLOUR_TEXT);
+  //   lv_label_set_text(s_slot_price[i], "");
+  // } 
+   
+
 
   // Rates Header Row: Import & Export text
   s_rates_header = make_group(s_root);
@@ -62,45 +118,45 @@ lv_obj_t* screen_rates_create(lv_obj_t* parent) {
   s_exp_label = make_label(s_rates_header, PUCK_FONT_BODY, PUCK_COLOUR_WARN);
   lv_label_set_text(s_exp_label, "Exp: --p");
 
-  // Chart Component
-  s_chart = lv_chart_create(s_root);
-  lv_obj_set_size(s_chart, 340, 180);
-  lv_obj_align(s_chart, LV_ALIGN_CENTER, 0, 15);
-  lv_chart_set_type(s_chart, LV_CHART_TYPE_LINE);
-  lv_chart_set_point_count(s_chart, 48);
+  // // Chart Component
+  // s_chart = lv_chart_create(s_root);
+  // lv_obj_set_size(s_chart, 340, 180);
+  // lv_obj_align(s_chart, LV_ALIGN_CENTER, 0, 15);
+  // lv_chart_set_type(s_chart, LV_CHART_TYPE_LINE);
+  // lv_chart_set_point_count(s_chart, 48);
 
-  // Background and grid lines
-  lv_obj_set_style_bg_color(s_chart, lv_color_hex(PUCK_COLOUR_BG), LV_PART_MAIN);
-  lv_obj_set_style_bg_opa(s_chart, LV_OPA_COVER, LV_PART_MAIN);
-  lv_obj_set_style_border_color(s_chart, lv_color_hex(PUCK_COLOUR_TRACK), LV_PART_MAIN);
-  lv_obj_set_style_border_width(s_chart, 1, LV_PART_MAIN);
-  lv_obj_set_style_line_color(s_chart, lv_color_hex(PUCK_COLOUR_TRACK), LV_PART_MAIN);
-  lv_obj_set_style_line_width(s_chart, 1, LV_PART_MAIN);
-  lv_chart_set_div_line_count(s_chart, 3, 4);
+  // // Background and grid lines
+  // lv_obj_set_style_bg_color(s_chart, lv_color_hex(PUCK_COLOUR_BG), LV_PART_MAIN);
+  // lv_obj_set_style_bg_opa(s_chart, LV_OPA_COVER, LV_PART_MAIN);
+  // lv_obj_set_style_border_color(s_chart, lv_color_hex(PUCK_COLOUR_TRACK), LV_PART_MAIN);
+  // lv_obj_set_style_border_width(s_chart, 1, LV_PART_MAIN);
+  // lv_obj_set_style_line_color(s_chart, lv_color_hex(PUCK_COLOUR_TRACK), LV_PART_MAIN);
+  // lv_obj_set_style_line_width(s_chart, 1, LV_PART_MAIN);
+  // lv_chart_set_div_line_count(s_chart, 3, 4);
 
-  // Add Import & Export series
-  s_series_import =
-      lv_chart_add_series(s_chart, lv_color_hex(PUCK_COLOUR_BATTERY), LV_CHART_AXIS_PRIMARY_Y);
-  s_series_export =
-      lv_chart_add_series(s_chart, lv_color_hex(PUCK_COLOUR_WARN), LV_CHART_AXIS_PRIMARY_Y);
+  // // Add Import & Export series
+  // s_series_import =
+  //     lv_chart_add_series(s_chart, lv_color_hex(PUCK_COLOUR_BATTERY), LV_CHART_AXIS_PRIMARY_Y);
+  // s_series_export =
+  //     lv_chart_add_series(s_chart, lv_color_hex(PUCK_COLOUR_WARN), LV_CHART_AXIS_PRIMARY_Y);
 
-  // Vertical line cursor for active slot
-  s_cursor = lv_chart_add_cursor(s_chart, lv_color_hex(PUCK_COLOUR_TEXT), LV_DIR_VER);
+  // // Vertical line cursor for active slot
+  // s_cursor = lv_chart_add_cursor(s_chart, lv_color_hex(PUCK_COLOUR_TEXT), LV_DIR_VER);
 
-  // Time Legend (00:00, 12:00, 24:00)
-  s_time_legend = make_group(s_root);
-  lv_obj_set_size(s_time_legend, 340, LV_SIZE_CONTENT);
-  lv_obj_set_flex_flow(s_time_legend, LV_FLEX_FLOW_ROW);
-  lv_obj_set_flex_align(s_time_legend, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
-                        LV_FLEX_ALIGN_CENTER);
-  lv_obj_align(s_time_legend, LV_ALIGN_CENTER, 0, 120);
+  // // Time Legend (00:00, 12:00, 24:00)
+  // s_time_legend = make_group(s_root);
+  // lv_obj_set_size(s_time_legend, 340, LV_SIZE_CONTENT);
+  // lv_obj_set_flex_flow(s_time_legend, LV_FLEX_FLOW_ROW);
+  // lv_obj_set_flex_align(s_time_legend, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+  //                       LV_FLEX_ALIGN_CENTER);
+  // lv_obj_align(s_time_legend, LV_ALIGN_CENTER, 0, 120);
 
-  lv_obj_t* t0 = make_label(s_time_legend, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED);
-  lv_label_set_text(t0, "00:00");
-  lv_obj_t* t12 = make_label(s_time_legend, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED);
-  lv_label_set_text(t12, "12:00");
-  lv_obj_t* t24 = make_label(s_time_legend, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED);
-  lv_label_set_text(t24, "24:00");
+  // lv_obj_t* t0 = make_label(s_time_legend, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED);
+  // lv_label_set_text(t0, "00:00");
+  // lv_obj_t* t12 = make_label(s_time_legend, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED);
+  // lv_label_set_text(t12, "12:00");
+  // lv_obj_t* t24 = make_label(s_time_legend, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED);
+  // lv_label_set_text(t24, "24:00");
 
   // Unconfigured state label
   s_unconfigured = make_label(s_root, PUCK_FONT_BODY, PUCK_COLOUR_MUTED);
@@ -117,20 +173,24 @@ void screen_rates_update(const Snapshot& snapshot) {
     return;
   }
 
+  if (s_band != nullptr) {
+    chart_band_refresh(s_band);
+  }
+
   const DayTariffRates& rates = snapshot.day_rates;
   bool has_data = rates.import_valid || rates.export_valid;
 
   if (!has_data) {
     lv_obj_add_flag(s_rates_header, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(s_chart, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(s_time_legend, LV_OBJ_FLAG_HIDDEN);
+    // lv_obj_add_flag(s_chart, LV_OBJ_FLAG_HIDDEN);
+    // lv_obj_add_flag(s_time_legend, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(s_unconfigured, LV_OBJ_FLAG_HIDDEN);
     return;
   }
 
   lv_obj_clear_flag(s_rates_header, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_clear_flag(s_chart, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_clear_flag(s_time_legend, LV_OBJ_FLAG_HIDDEN);
+  // lv_obj_clear_flag(s_chart, LV_OBJ_FLAG_HIDDEN);
+  // lv_obj_clear_flag(s_time_legend, LV_OBJ_FLAG_HIDDEN);
   lv_obj_add_flag(s_unconfigured, LV_OBJ_FLAG_HIDDEN);
 
   // Position vertical line cursor at active slot index based on timestamp
@@ -155,10 +215,15 @@ void screen_rates_update(const Snapshot& snapshot) {
 
   char buf[32];
   if (rates.import_valid && imp_known) {
+    snprintf(buf, sizeof(buf), "%.1fp", cur_imp);
+    lv_label_set_text(s_rate_now_imp, buf);
+    lv_obj_clear_flag(s_rate_now_imp, LV_OBJ_FLAG_HIDDEN);
+
     snprintf(buf, sizeof(buf), "Imp: %.1fp", cur_imp);
     lv_label_set_text(s_imp_label, buf);
     lv_obj_clear_flag(s_imp_label, LV_OBJ_FLAG_HIDDEN);
   } else {
+    lv_obj_clear_flag(s_rate_now_imp, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_imp_label, LV_OBJ_FLAG_HIDDEN);
   }
 
@@ -170,40 +235,40 @@ void screen_rates_update(const Snapshot& snapshot) {
     lv_obj_add_flag(s_exp_label, LV_OBJ_FLAG_HIDDEN);
   }
 
-  // Calculate Y min and Y max range for chart scaling
-  float min_val = 0.0f;
-  float max_val = 20.0f;  // default scale ceiling
+  // // Calculate Y min and Y max range for chart scaling
+  // float min_val = 0.0f;
+  // float max_val = 20.0f;  // default scale ceiling
 
-  for (int i = 0; i < 48; ++i) {
-    if (rates.import_valid && rates.import_slots[i].valid) {
-      min_val = std::min(min_val, rates.import_slots[i].pence);
-      max_val = std::max(max_val, rates.import_slots[i].pence);
-    }
-    if (rates.export_valid && rates.export_slots[i].valid) {
-      min_val = std::min(min_val, rates.export_slots[i].pence);
-      max_val = std::max(max_val, rates.export_slots[i].pence);
-    }
-  }
-  max_val = std::max(max_val, min_val + 5.0f);  // Ensure non-zero range
+  // for (int i = 0; i < 48; ++i) {
+  //   if (rates.import_valid && rates.import_slots[i].valid) {
+  //     min_val = std::min(min_val, rates.import_slots[i].pence);
+  //     max_val = std::max(max_val, rates.import_slots[i].pence);
+  //   }
+  //   if (rates.export_valid && rates.export_slots[i].valid) {
+  //     min_val = std::min(min_val, rates.export_slots[i].pence);
+  //     max_val = std::max(max_val, rates.export_slots[i].pence);
+  //   }
+  // }
+  // max_val = std::max(max_val, min_val + 5.0f);  // Ensure non-zero range
 
-  lv_chart_set_range(s_chart, LV_CHART_AXIS_PRIMARY_Y, static_cast<lv_coord_t>(min_val),
-                     static_cast<lv_coord_t>(max_val));
+  // lv_chart_set_range(s_chart, LV_CHART_AXIS_PRIMARY_Y, static_cast<lv_coord_t>(min_val),
+  //                    static_cast<lv_coord_t>(max_val));
 
-  // Populate 48 points into graph series
-  for (int i = 0; i < 48; ++i) {
-    if (rates.import_valid && rates.import_slots[i].valid) {
-      s_series_import->y_points[i] = static_cast<lv_coord_t>(rates.import_slots[i].pence);
-    } else {
-      s_series_import->y_points[i] = LV_CHART_POINT_NONE;
-    }
+  // // Populate 48 points into graph series
+  // for (int i = 0; i < 48; ++i) {
+  //   if (rates.import_valid && rates.import_slots[i].valid) {
+  //     s_series_import->y_points[i] = static_cast<lv_coord_t>(rates.import_slots[i].pence);
+  //   } else {
+  //     s_series_import->y_points[i] = LV_CHART_POINT_NONE;
+  //   }
 
-    if (rates.export_valid && rates.export_slots[i].valid) {
-      s_series_export->y_points[i] = static_cast<lv_coord_t>(rates.export_slots[i].pence);
-    } else {
-      s_series_export->y_points[i] = LV_CHART_POINT_NONE;
-    }
-  }
+  //   if (rates.export_valid && rates.export_slots[i].valid) {
+  //     s_series_export->y_points[i] = static_cast<lv_coord_t>(rates.export_slots[i].pence);
+  //   } else {
+  //     s_series_export->y_points[i] = LV_CHART_POINT_NONE;
+  //   }
+  // }
 
-  lv_chart_set_cursor_point(s_chart, s_cursor, NULL, slot_idx);
-  lv_chart_refresh(s_chart);
+  // lv_chart_set_cursor_point(s_chart, s_cursor, NULL, slot_idx);
+  // lv_chart_refresh(s_chart);
 }

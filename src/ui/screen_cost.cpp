@@ -1,6 +1,7 @@
 #include "screen_cost.h"
 
 #include <stdio.h>
+#include <time.h>
 
 #include "board_config.h"
 #include "format.h"
@@ -11,14 +12,26 @@ namespace {
 constexpr lv_coord_t ROW_WIDTH = 250;
 
 lv_obj_t* s_root = nullptr;
-lv_obj_t* s_saving = nullptr;
-lv_obj_t* s_saving_caption = nullptr;
-lv_obj_t* s_rate_now = nullptr;
+lv_obj_t* s_rate_imp_now = nullptr;
+lv_obj_t* s_pill = nullptr;
+lv_obj_t* s_rate_exp_now = nullptr;
+lv_obj_t* s_caption = nullptr;
 lv_obj_t* s_slots_box = nullptr;
 lv_obj_t* s_slot_when[SNAPSHOT_MAX_TARIFF_SLOTS] = {};
-lv_obj_t* s_slot_price[SNAPSHOT_MAX_TARIFF_SLOTS] = {};
+lv_obj_t* s_slot_price_imp[SNAPSHOT_MAX_TARIFF_SLOTS] = {};
+lv_obj_t* s_slot_price_exp[SNAPSHOT_MAX_TARIFF_SLOTS] = {};
 lv_obj_t* s_slot_rows[SNAPSHOT_MAX_TARIFF_SLOTS] = {};
 lv_obj_t* s_unconfigured = nullptr;
+
+lv_obj_t* make_label(lv_obj_t* parent, const lv_font_t* font, uint32_t colour, lv_coord_t x,
+                     lv_coord_t y) {
+  lv_obj_t* label = lv_label_create(parent);
+  lv_obj_set_style_text_font(label, font, LV_PART_MAIN);
+  lv_obj_set_style_text_color(label, lv_color_hex(colour), LV_PART_MAIN);
+  lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+  lv_obj_align(label, LV_ALIGN_CENTER, x, y);
+  return label;
+}
 
 lv_obj_t* make_label(lv_obj_t* parent, const lv_font_t* font, uint32_t colour) {
   lv_obj_t* label = lv_label_create(parent);
@@ -61,22 +74,35 @@ lv_obj_t* screen_cost_create(lv_obj_t* parent) {
   lv_obj_set_style_bg_opa(s_root, LV_OPA_COVER, LV_PART_MAIN);
 
   lv_obj_t* title = make_label(s_root, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED);
+  lv_obj_set_style_text_letter_space(title, 3, LV_PART_MAIN);
   lv_label_set_text(title, "COST");
-  lv_obj_align(title, LV_ALIGN_CENTER, 0, -138);
+  lv_obj_align(title, LV_ALIGN_CENTER, 0, -170);
 
-  // The pound sign here is the whole reason for the custom font subset: LVGL's
-  // built-in Montserrat stops at ASCII.
-  s_saving = make_label(s_root, PUCK_FONT_HERO, PUCK_COLOUR_BATTERY);
-  lv_label_set_text(s_saving, "--");
-  lv_obj_align(s_saving, LV_ALIGN_CENTER, 0, -90);
+  // Import tariff rate
+  s_rate_imp_now = make_label(s_root, PUCK_FONT_HERO, PUCK_COLOUR_TEXT, 0, -124);
+  lv_label_set_text(s_rate_imp_now, "--");
 
-  s_saving_caption = make_label(s_root, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED);
-  lv_label_set_text(s_saving_caption, "saved today");
-  lv_obj_align(s_saving_caption, LV_ALIGN_CENTER, 0, -52);
+  // The export tariff rate, in the same pill screen 2 uses for the same job.
+  s_pill = lv_obj_create(s_root);
+  lv_obj_remove_style_all(s_pill);
+  lv_obj_clear_flag(s_pill, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(s_pill, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_size(s_pill, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+  lv_obj_set_style_radius(s_pill, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+  lv_obj_set_style_pad_hor(s_pill, 18, LV_PART_MAIN);
+  lv_obj_set_style_pad_ver(s_pill, 7, LV_PART_MAIN);
+  lv_obj_set_style_bg_color(s_pill, lv_color_hex(PUCK_COLOUR_EXPORT), LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(s_pill, LV_OPA_20, LV_PART_MAIN);
+  lv_obj_align(s_pill, LV_ALIGN_CENTER, 0, -64);
 
-  s_rate_now = make_label(s_root, PUCK_FONT_BODY, PUCK_COLOUR_TEXT);
-  lv_label_set_text(s_rate_now, "--");
-  lv_obj_align(s_rate_now, LV_ALIGN_CENTER, 0, -12);
+  s_rate_exp_now = lv_label_create(s_pill);
+  lv_obj_set_style_text_font(s_rate_exp_now, PUCK_FONT_LARGE, LV_PART_MAIN);
+  lv_obj_set_style_text_color(s_rate_exp_now, lv_color_hex(PUCK_COLOUR_EXPORT), LV_PART_MAIN);
+  lv_label_set_text(s_rate_exp_now, "--");
+  lv_obj_center(s_rate_exp_now);
+
+  s_caption = make_label(s_root, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED, 0, -26);
+  lv_label_set_text(s_caption, "now");
 
   s_slots_box = make_group(s_root);
   lv_obj_set_size(s_slots_box, ROW_WIDTH, LV_SIZE_CONTENT);
@@ -95,8 +121,11 @@ lv_obj_t* screen_cost_create(lv_obj_t* parent) {
     s_slot_when[i] = make_label(row, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED);
     lv_label_set_text(s_slot_when[i], "");
 
-    s_slot_price[i] = make_label(row, PUCK_FONT_BODY, PUCK_COLOUR_TEXT);
-    lv_label_set_text(s_slot_price[i], "");
+    s_slot_price_imp[i] = make_label(row, PUCK_FONT_BODY, PUCK_COLOUR_TEXT);
+    lv_label_set_text(s_slot_price_imp[i], "");
+
+    s_slot_price_exp[i] = make_label(row, PUCK_FONT_BODY, PUCK_COLOUR_EXPORT);
+    lv_label_set_text(s_slot_price_exp[i], "");
   }
 
   s_unconfigured = make_label(s_root, PUCK_FONT_BODY, PUCK_COLOUR_MUTED);
@@ -113,23 +142,18 @@ void screen_cost_update(const Snapshot& snapshot) {
     return;
   }
 
-  const bool configured = snapshot.valid && snapshot.cost.configured;
+  const DayTariffRates& rates = snapshot.day_rates;
+  const bool configured = snapshot.valid && (rates.import_valid || snapshot.cost.configured);
 
   // The server says configured:false rather than omitting the block, so there is
   // a real difference between "no tariff set up" and "we could not reach it".
   if (!configured) {
-    // No dashed hero above the message, for the same reason as screen 3: it
-    // reads as a missing saving rather than an absent tariff.
-    lv_obj_add_flag(s_saving, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(s_saving_caption, LV_OBJ_FLAG_HIDDEN);
-    lv_label_set_text(s_rate_now, "");
+    lv_label_set_text(s_rate_imp_now, "");
     lv_obj_add_flag(s_slots_box, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(s_unconfigured, LV_OBJ_FLAG_HIDDEN);
     lv_label_set_text(s_unconfigured, snapshot.valid ? "no tariff set" : "offline");
     return;
   }
-  lv_obj_clear_flag(s_saving, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_clear_flag(s_saving_caption, LV_OBJ_FLAG_HIDDEN);
   lv_obj_clear_flag(s_slots_box, LV_OBJ_FLAG_HIDDEN);
   lv_obj_add_flag(s_unconfigured, LV_OBJ_FLAG_HIDDEN);
 
@@ -137,44 +161,78 @@ void screen_cost_update(const Snapshot& snapshot) {
   char text[32];
   char scratch[16];
 
-  if (cost.saving_gbp.known) {
-    snprintf(text, sizeof(text), "£%.2f", cost.saving_gbp.value);
-    lv_label_set_text(s_saving, text);
-    // A negative saving is a real outcome on a bad day, and colouring it green
-    // would be a lie.
-    lv_obj_set_style_text_color(
-        s_saving,
-        lv_color_hex(cost.saving_gbp.value < 0.0f ? PUCK_COLOUR_WARN : PUCK_COLOUR_BATTERY),
-        LV_PART_MAIN);
-  } else {
-    lv_label_set_text(s_saving, "--");
+  uint8_t slot_idx = 0;
+  time_t now = snapshot.ts != 0 ? static_cast<time_t>(snapshot.ts) : time(nullptr);
+  struct tm tm_now = {};
+  const bool time_valid = (localtime_r(&now, &tm_now) != nullptr);
+  if (time_valid) {
+    uint8_t calculated = (tm_now.tm_hour * 2) + (tm_now.tm_min >= 30 ? 1 : 0);
+    slot_idx = calculated < 48 ? calculated : 47;
   }
 
-  if (cost.rate_p.known) {
-    puck_format_magnitude(cost.rate_p, 1, scratch, sizeof(scratch));
-    snprintf(text, sizeof(text), "%sp per kWh now", scratch);
-    lv_label_set_text(s_rate_now, text);
+  MaybeFloat rate_imp_now;
+  if (time_valid && rates.import_valid && rates.import_slots[slot_idx].valid) {
+    rate_imp_now.known = true;
+    rate_imp_now.value = rates.import_slots[slot_idx].pence;
+    puck_format_magnitude(rate_imp_now, 1, scratch, sizeof(scratch));
+    snprintf(text, sizeof(text), "Buy %sp kWh", scratch);
+    lv_label_set_text(s_rate_imp_now, text);
   } else {
-    lv_label_set_text(s_rate_now, "rate unknown");
+    lv_label_set_text(s_rate_imp_now, "Import rate unknown");
   }
+
+  MaybeFloat rate_exp_now;
+  if (time_valid && rates.export_valid && rates.export_slots[slot_idx].valid) {
+    rate_exp_now.known = true;
+    rate_exp_now.value = rates.export_slots[slot_idx].pence;
+    puck_format_magnitude(rate_exp_now, 1, scratch, sizeof(scratch));
+    snprintf(text, sizeof(text), "Sell %sp kWh", scratch);
+    lv_label_set_text(s_rate_exp_now, text);
+  } else {
+    lv_label_set_text(s_rate_exp_now, "Export rate unknown");
+  }
+
+
+  const int32_t seconds_since_midnight =
+      time_valid ? (tm_now.tm_hour * 3600 + tm_now.tm_min * 60 + tm_now.tm_sec) : 0;
 
   for (size_t i = 0; i < SNAPSHOT_MAX_TARIFF_SLOTS; ++i) {
-    if (i >= cost.next_count) {
+    const size_t next_idx = slot_idx + 1 + i;
+    bool has_slot = false;
+    float slot_pence = 0.0f;
+    int32_t ahead = 0;
+
+    if (time_valid && rates.import_valid && next_idx < 48 && rates.import_slots[next_idx].valid) {
+      has_slot = true;
+      slot_pence = rates.import_slots[next_idx].pence;
+      ahead = static_cast<int32_t>(next_idx * 1800) - seconds_since_midnight;
+    } else if (i < cost.next_count) {
+      has_slot = true;
+      slot_pence = cost.next[i].pence;
+      ahead = static_cast<int32_t>(cost.next[i].from) - static_cast<int32_t>(snapshot.ts);
+    }
+
+    if (!has_slot) {
       lv_obj_add_flag(s_slot_rows[i], LV_OBJ_FLAG_HIDDEN);
       continue;
     }
+
     lv_obj_clear_flag(s_slot_rows[i], LV_OBJ_FLAG_HIDDEN);
 
-    // Offsets are measured from the payload's own timestamp, not the device
-    // clock, so they stay right even before NTP has ever run.
-    const int32_t ahead = static_cast<int32_t>(cost.next[i].from) - static_cast<int32_t>(snapshot.ts);
     puck_format_offset(ahead, scratch, sizeof(scratch));
     lv_label_set_text(s_slot_when[i], scratch);
 
-    snprintf(text, sizeof(text), "%.1fp", cost.next[i].pence);
-    lv_label_set_text(s_slot_price[i], text);
-    lv_obj_set_style_text_color(s_slot_price[i],
-                                lv_color_hex(colour_for_price(cost.next[i].pence, cost.rate_p)),
-                                LV_PART_MAIN);
+    snprintf(text, sizeof(text), "%.1fp", slot_pence);
+    lv_label_set_text(s_slot_price_imp[i], text);
+    lv_obj_set_style_text_color(
+        s_slot_price_imp[i],
+        lv_color_hex(colour_for_price(slot_pence, rate_imp_now)),
+        LV_PART_MAIN);
+    
+    snprintf(text, sizeof(text), "%.1fp", slot_pence);
+    lv_label_set_text(s_slot_price_exp[i], text);
+    lv_obj_set_style_text_color(
+        s_slot_price_exp[i], lv_color_hex(PUCK_COLOUR_EXPORT),
+        LV_PART_MAIN);
   }
 }
