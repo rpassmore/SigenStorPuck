@@ -119,12 +119,18 @@ lv_obj_t* screen_cost_create(lv_obj_t* parent) {
     s_slot_rows[i] = row;
 
     s_slot_when[i] = make_label(row, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED);
+    lv_obj_set_width(s_slot_when[i], 70);
+    lv_obj_set_style_text_align(s_slot_when[i], LV_TEXT_ALIGN_LEFT, LV_PART_MAIN);
     lv_label_set_text(s_slot_when[i], "");
 
     s_slot_price_imp[i] = make_label(row, PUCK_FONT_BODY, PUCK_COLOUR_TEXT);
+    lv_obj_set_width(s_slot_price_imp[i], 90);
+    lv_obj_set_style_text_align(s_slot_price_imp[i], LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
     lv_label_set_text(s_slot_price_imp[i], "");
 
     s_slot_price_exp[i] = make_label(row, PUCK_FONT_BODY, PUCK_COLOUR_EXPORT);
+    lv_obj_set_width(s_slot_price_exp[i], 90);
+    lv_obj_set_style_text_align(s_slot_price_exp[i], LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
     lv_label_set_text(s_slot_price_exp[i], "");
   }
 
