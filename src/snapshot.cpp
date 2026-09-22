@@ -120,6 +120,7 @@ bool snapshot_parse(const char* json, size_t length, Snapshot* out) {
     ++parsed.cost.next_count;
   }
 
+  // Days tariff rates
   JsonVariantConst day_rates = doc["day_rates"];
   if (day_rates.is<JsonObjectConst>()) {
     parsed.day_rates.import_valid = day_rates["import_valid"] | false;
