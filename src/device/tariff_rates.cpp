@@ -35,9 +35,9 @@ String build_tariff_url(const String& product_code) {
   if (product_code.startsWith("E-1R-") || product_code.startsWith("E-2R-")) {
     return "https://api.octopus.energy/v1/products/" + product_code + "/standard-unit-rates/";
   }
-  // Standard product code like AGILE-24-10-01 -> assume Region G (London) or direct product path
+  // Standard product code like AGILE-24-10-01 -> assume Region L (South West) or direct product path
   return "https://api.octopus.energy/v1/products/" + product_code +
-         "/electricity-tariffs/E-1R-" + product_code + "-G/standard-unit-rates/";
+         "/electricity-tariffs/E-1R-" + product_code + "-L/standard-unit-rates/";
 }
 
 FetchResult fetch_rates_for_code(const String& product_code, RateSlot slots[48]) {
