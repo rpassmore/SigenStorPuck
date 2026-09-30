@@ -4,6 +4,7 @@
 #include <HTTPClient.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <set>
 #include <time.h>
 
 #include "board_config.h"
@@ -53,65 +54,114 @@ FetchResult fetch_products() {
   http.setConnectTimeout(CONNECT_TIMEOUT_MS);
   http.setTimeout(TOTAL_TIMEOUT_MS);
   http.setUserAgent(USER_AGENT);
-  http.setReuse(false);
+  http.setReuse(true);
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-
-  if (!http.begin(tls, HOST)) {
-    return FetchResult::TlsFailed;
-  }
-  http.addHeader("Accept", "application/json");
-
-  const int status = http.GET();
-  if (status <= 0) {
-    http.end();
-    return FetchResult::TlsFailed;
-  }
-  if (status != HTTP_CODE_OK) {
-    http.end();
-    return FetchResult::HttpError;
-  }
-
-  const String body = http.getString();
-  http.end();
-
-  JsonDocument doc;
-  DeserializationError error = deserializeJson(doc, body);
-  if (error != DeserializationError::Ok) {
-    return FetchResult::BadPayload;
-  }
-
-  JsonArrayConst results = doc["results"];
-  if (results.isNull()) {
-    return FetchResult::BadPayload;
-  }
 
   std::vector<TariffProduct> new_imports;
   std::vector<TariffProduct> new_exports;
+  std::set<String> seen_imports;
+  std::set<String> seen_exports;
 
-  for (JsonObjectConst prod : results) {
-    const char* code = prod["code"];
-    const char* name = prod["display_name"];
-    const char* direction = prod["direction"];
-    if (!code || !name) {
+  const time_t now = time(nullptr);
+  constexpr time_t WEEK_SECONDS = 7 * 24 * 3600;
+  constexpr int WEEKS_COUNT = 52;
+
+  bool any_http_success = false;
+  FetchResult last_error = FetchResult::HttpError;
+
+  for (int week = 0; week <= WEEKS_COUNT; ++week) {
+    const time_t sample_time = now - static_cast<time_t>(week) * WEEK_SECONDS;
+    struct tm tm_buf;
+    gmtime_r(&sample_time, &tm_buf);
+    char time_str[32];
+    snprintf(time_str, sizeof(time_str), "%04d-%02d-%02dT%02d:%02d:%02dZ",
+             tm_buf.tm_year + 1900, tm_buf.tm_mon + 1, tm_buf.tm_mday,
+             tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec);
+
+    const String url = String(HOST) + "?available_at=" + time_str;
+    
+    Serial.printf("%s\n", url);
+
+    if (!http.begin(tls, url)) {
+      last_error = FetchResult::TlsFailed;
+      continue;
+    }
+    http.addHeader("Accept", "application/json");
+
+    const int status = http.GET();
+    if (status <= 0) {
+      last_error = FetchResult::TlsFailed;
+      http.end();
+      delay(1);
+      continue;
+    }
+    if (status != HTTP_CODE_OK) {
+      last_error = FetchResult::HttpError;
+      http.end();
+      delay(1);
       continue;
     }
 
-    TariffProduct product;
-    product.code = String(code);
-    product.display_name = String(name);
-    
-    if (direction && strcmp(direction, "EXPORT") == 0) {
-      product.is_export = true;
-      new_exports.push_back(product);
-    } else {
-      product.is_export = false;
-      new_imports.push_back(product);
+    const String body = http.getString();
+    http.end();
+
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, body);
+    if (error != DeserializationError::Ok) {
+      last_error = FetchResult::BadPayload;
+      delay(1);
+      continue;
     }
+
+    JsonArrayConst results = doc["results"];
+    if (results.isNull()) {
+      last_error = FetchResult::BadPayload;
+      delay(1);
+      continue;
+    }
+
+    any_http_success = true;
+
+    for (JsonObjectConst prod : results) {
+      const char* code = prod["code"];
+      const char* name = prod["full_name"];
+      const char* direction = prod["direction"];
+      if (!code || !name) {
+        continue;
+      }
+
+      TariffProduct product;
+      product.code = String(code);
+      product.display_name = String(name);
+
+      if (direction && strcmp(direction, "EXPORT") == 0) {
+        product.is_export = true;
+        if (seen_exports.insert(product.code).second) {
+          new_exports.push_back(product);
+        }
+      } else {
+        product.is_export = false;
+        if (seen_imports.insert(product.code).second) {
+          new_imports.push_back(product);
+        }
+      }
+    }
+
+    delay(1);
   }
 
   if (new_imports.empty() && new_exports.empty()) {
-    return FetchResult::BadPayload;
+    return any_http_success ? FetchResult::BadPayload : last_error;
   }
+
+  //sort the products
+  std::sort(new_imports.begin(), new_imports.end(), [](const TariffProduct& a, const TariffProduct& b) {
+      return a.display_name < b.display_name;
+  });
+  std::sort(new_exports.begin(), new_exports.end(), [](const TariffProduct& a, const TariffProduct& b) {
+      return a.display_name < b.display_name;
+  });
+
 
   s_import_products = std::move(new_imports);
   s_export_products = std::move(new_exports);
