@@ -112,7 +112,7 @@ static void chart_draw_event_cb(lv_event_t * e)
         fill_area.y2 = obj->coords.y2; // Extends straight down to the chart's bottom boundary
 
         // Initialise fade: start with semi-transparency at the top, down to absolute transparent at the base
-        lv_draw_mask_fade_init(&fade_mask_param, &fill_area, LV_OPA_30, fill_area.y1, LV_OPA_TRANSP, fill_area.y2);
+        lv_draw_mask_fade_init(&fade_mask_param, &fill_area, LV_OPA_20, fill_area.y1, LV_OPA_TRANSP, fill_area.y2);
         int16_t fade_mask_id = lv_draw_mask_add(&fade_mask_param, NULL);
 
         // 5. Setup the draw rectangle properties
@@ -148,8 +148,8 @@ lv_obj_t* screen_rates_create(lv_obj_t* parent) {
   lv_chart_set_type(s_chart, LV_CHART_TYPE_LINE);
   lv_chart_set_point_count(s_chart, 48);
   lv_obj_set_style_size(s_chart, 0, LV_PART_INDICATOR);
-  lv_obj_set_style_bg_opa(s_chart, LV_OPA_50, LV_PART_INDICATOR | LV_STATE_DEFAULT);
-  lv_obj_set_style_line_opa(s_chart, LV_OPA_50, LV_PART_ITEMS | LV_STATE_DEFAULT);
+  lv_obj_set_style_bg_opa(s_chart, LV_OPA_30, LV_PART_INDICATOR | LV_STATE_DEFAULT);
+  lv_obj_set_style_line_opa(s_chart, LV_OPA_30, LV_PART_ITEMS | LV_STATE_DEFAULT);
   lv_obj_add_event_cb(s_chart, chart_draw_event_cb, LV_EVENT_DRAW_PART_BEGIN, NULL);
 
 
@@ -212,7 +212,6 @@ lv_obj_t* screen_rates_create(lv_obj_t* parent) {
   lv_obj_set_size(s_slots_box, ROW_WIDTH, LV_SIZE_CONTENT);
   lv_obj_set_flex_flow(s_slots_box, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_style_pad_row(s_slots_box, 6, LV_PART_MAIN);
-  // lv_obj_align(s_slots_box, LV_ALIGN_CENTER, 0, 90);
   lv_obj_align(s_slots_box, LV_ALIGN_CENTER, 0, 50);
 
   for (size_t i = 0; i < SNAPSHOT_MAX_TARIFF_SLOTS; ++i) {
@@ -330,7 +329,7 @@ void screen_rates_update(const Snapshot& snapshot) {
     snprintf(text, sizeof(text), "Buy %sp kWh", scratch);
     lv_label_set_text(s_rate_imp_now, text);
   } else {
-    lv_label_set_text(s_rate_imp_now, "Import rate unknown");
+    lv_label_set_text(s_rate_imp_now, "Rate unknown");
   }
 
   MaybeFloat rate_exp_now;
