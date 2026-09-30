@@ -183,7 +183,7 @@ lv_obj_t* screen_rates_create(lv_obj_t* parent) {
 
 
   // Import tariff rate
-  s_rate_imp_now = make_label(s_root, PUCK_FONT_HERO, PUCK_COLOUR_TEXT, 0, -124);
+  s_rate_imp_now = make_label(s_root, PUCK_FONT_HERO, PUCK_COLOUR_IMPORT, 0, -124);
   lv_label_set_text(s_rate_imp_now, "--");
 
   // The export tariff rate, in the same pill screen 2 uses for the same job.
