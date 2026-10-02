@@ -112,7 +112,7 @@ bool get_local_day_bounds(time_t now, time_t* day_start, time_t* day_end) {
   }
 
   struct tm local_now = {};
-  if (localtime_r(&now, &local_now) == nullptr) {
+  if (gmtime_r(&now, &local_now) == nullptr) {
     return false;
   }
 
@@ -120,7 +120,7 @@ bool get_local_day_bounds(time_t now, time_t* day_start, time_t* day_end) {
   local_midnight.tm_hour = 0;
   local_midnight.tm_min = 0;
   local_midnight.tm_sec = 0;
-  local_midnight.tm_isdst = -1;
+  local_midnight.tm_isdst = 0;
 
   const time_t start = mktime(&local_midnight);
   if (start == static_cast<time_t>(-1)) {
@@ -130,7 +130,7 @@ bool get_local_day_bounds(time_t now, time_t* day_start, time_t* day_end) {
   // Advance the calendar date, rather than adding 24 hours. This preserves
   // the correct local midnight across UK DST transitions.
   local_midnight.tm_mday += 1;
-  local_midnight.tm_isdst = -1;
+  local_midnight.tm_isdst = 0;
   const time_t end = mktime(&local_midnight);
   if (end == static_cast<time_t>(-1)) {
     return false;
@@ -142,10 +142,6 @@ bool get_local_day_bounds(time_t now, time_t* day_start, time_t* day_end) {
 }
 
 // Fill the fixed 48 local half-hour slots from an API interval.
-//
-// For normal UK days each slot is exactly 1800 seconds. The existing storage
-// model is deliberately retained, so DST transition days remain constrained
-// to 48 slots just as they were before this change.
 void apply_interval(RateSlot slots[TARIFF_SLOT_COUNT],
                     time_t day_start,
                     time_t day_end,
@@ -320,7 +316,7 @@ FetchResult tariff_rates_service() {
   struct tm tm_now = {};
   const bool clock_ok = clock_is_plausible();
   if (clock_ok) {
-    localtime_r(&now, &tm_now);
+    gmtime_r(&now, &tm_now);
   }
 
   const uint32_t now_ms = millis();
@@ -397,7 +393,7 @@ const DayTariffRates& tariff_rates_get() {
 uint8_t tariff_rates_get_current_slot() {
   const time_t now = time(nullptr);
   struct tm tm_now = {};
-  if (localtime_r(&now, &tm_now) != nullptr) {
+  if (gmtime_r(&now, &tm_now) != nullptr) {
     const uint8_t slot = static_cast<uint8_t>((tm_now.tm_hour * 2) +
                                               (tm_now.tm_min >= 30 ? 1 : 0));
     return slot < TARIFF_SLOT_COUNT ? slot : TARIFF_SLOT_COUNT - 1;

@@ -14,6 +14,7 @@ namespace {
 // implementation (see the provenance rule in CLAUDE.md).
 constexpr const char* SETUP_AP_PREFIX = "SigenStorPuck";
 
+constexpr const char* TZ_INFO = "UTC0"; 
 constexpr const char* NTP_PRIMARY = "pool.ntp.org";
 constexpr const char* NTP_SECONDARY = "time.nist.gov";
 
@@ -81,7 +82,7 @@ void on_connected() {
   if (!s_time_requested) {
     // UTC. The device shows relative times, not clock times, so no timezone is
     // needed — the clock exists to make TLS certificate validation possible.
-    configTime(0, 0, NTP_PRIMARY, NTP_SECONDARY);
+    configTzTime(TZ_INFO, NTP_PRIMARY, NTP_SECONDARY);
     s_time_requested = true;
     Serial.println("[net] NTP requested");
   }
