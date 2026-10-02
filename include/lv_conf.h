@@ -74,13 +74,8 @@
 
 // --------------------------------------------------------------- geometry ----
 
-// Guition ESP32-4848S040: 480 px across a 4.3" panel, ~130 px my old 1.75"
-// board (466 px) target was tuned for the same DPI it had — this is now
-// closer to the physical ~130 px/in this board's own panel would want if it
-// weren't smaller. 480 px / 4.3 in comes out to roughly 112, which is what's
-// set below; nudge it if paddings/fonts read too airy or too tight compared
-// with how the screens were designed.
-#define LV_DPI_DEF 112
+// Guition ESP32-4848S040: set to 130 as thats what the only app.lcdwizard.com uses for this board
+#define LV_DPI_DEF 130
 
 // ----------------------------------------------------------------- fonts ----
 
@@ -91,13 +86,36 @@
 //
 // The built-ins stay off: carrying two near-identical Montserrats would waste
 // flash and make it easy to reach for the one that cannot render a pound sign.
-#define LV_FONT_CUSTOM_DECLARE \
-  LV_FONT_DECLARE(puck_font_14) \
-  LV_FONT_DECLARE(puck_font_20) \
-  LV_FONT_DECLARE(puck_font_28) \
-  LV_FONT_DECLARE(puck_font_48)
+// #define LV_FONT_CUSTOM_DECLARE \
+//   LV_FONT_DECLARE(puck_font_14) \
+//   LV_FONT_DECLARE(puck_font_20) \
+//   LV_FONT_DECLARE(puck_font_28) \
+//   LV_FONT_DECLARE(puck_font_48)
+// #define LV_FONT_DEFAULT &puck_font_20
 
-#define LV_FONT_DEFAULT &puck_font_20
+// Default LVGL fonts
+#define LV_FONT_MONTSERRAT_8 0
+#define LV_FONT_MONTSERRAT_10 0
+#define LV_FONT_MONTSERRAT_12 0
+#define LV_FONT_MONTSERRAT_14 1
+#define LV_FONT_MONTSERRAT_16 1
+#define LV_FONT_MONTSERRAT_18 0
+#define LV_FONT_MONTSERRAT_20 1
+#define LV_FONT_MONTSERRAT_22 0
+#define LV_FONT_MONTSERRAT_24 0
+#define LV_FONT_MONTSERRAT_26 0
+#define LV_FONT_MONTSERRAT_28 1
+#define LV_FONT_MONTSERRAT_30 0
+#define LV_FONT_MONTSERRAT_32 0
+#define LV_FONT_MONTSERRAT_34 0
+#define LV_FONT_MONTSERRAT_36 0
+#define LV_FONT_MONTSERRAT_38 0
+#define LV_FONT_MONTSERRAT_40 0
+#define LV_FONT_MONTSERRAT_42 0
+#define LV_FONT_MONTSERRAT_44 0
+#define LV_FONT_MONTSERRAT_46 0
+#define LV_FONT_MONTSERRAT_48 1
+#define LV_FONT_DEFAULT &lv_font_montserrat_20
 
 // --------------------------------------------------------------- widgets ----
 
