@@ -43,6 +43,9 @@ constexpr const char* KEY_SOL_CAP = "sol_cap";
 // One blob for the same reason the device list is one: four arrays times three
 // fields is twelve NVS entries that would have to stay in step.
 constexpr const char* KEY_SOL_ARRAYS = "sol_arrays";
+constexpr const char* KEY_TARIFF_IMP = "trf_imp";
+constexpr const char* KEY_TARIFF_EXP = "trf_exp";
+constexpr const char* KEY_TARIFF_FETCH_TIME = "trf_ftime";
 
 // The protocol enforces a 1 s floor and the server polls Modbus every 5 s, so
 // anything faster only adds load without making data fresher (PLAN.md §A4).
@@ -119,6 +122,10 @@ void settings_begin() {
   if (prefs.isKey(KEY_SOL_ARRAYS)) {
     prefs.getBytes(KEY_SOL_ARRAYS, s_settings.solar_arrays, sizeof(s_settings.solar_arrays));
   }
+  s_settings.tariff_import_code = prefs.getString(KEY_TARIFF_IMP, s_settings.tariff_import_code);
+  s_settings.tariff_export_code = prefs.getString(KEY_TARIFF_EXP, s_settings.tariff_export_code);
+  s_settings.tariff_fetch_time_min =
+      prefs.getUShort(KEY_TARIFF_FETCH_TIME, s_settings.tariff_fetch_time_min);
   prefs.end();
 
   // The token is never logged, only its presence.
@@ -488,5 +495,28 @@ bool settings_set_check_updates(bool enabled) {
   prefs.putBool(KEY_UPDATES, enabled);
   prefs.end();
   s_settings.check_updates = enabled;
+  return true;
+}
+
+bool settings_set_tariffs(const String& import_code, const String& export_code,
+                         uint16_t fetch_time_min) {
+  if (fetch_time_min >= 1440) {
+    fetch_time_min = 960;  // Fallback to 16:00 if invalid
+  }
+  Preferences prefs;
+  if (!prefs.begin(NAMESPACE, /*readOnly=*/false)) {
+    return false;
+  }
+  prefs.putString(KEY_TARIFF_IMP, import_code);
+  prefs.putString(KEY_TARIFF_EXP, export_code);
+  prefs.putUShort(KEY_TARIFF_FETCH_TIME, fetch_time_min);
+  prefs.end();
+
+  s_settings.tariff_import_code = import_code;
+  s_settings.tariff_export_code = export_code;
+  s_settings.tariff_fetch_time_min = fetch_time_min;
+  Serial.printf("[settings] tariffs import='%s' export='%s' fetch_time=%02u:%02u\n",
+                import_code.c_str(), export_code.c_str(), fetch_time_min / 60,
+                fetch_time_min % 60);
   return true;
 }

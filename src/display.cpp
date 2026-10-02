@@ -3,7 +3,6 @@
 #include <Arduino.h>
 #include <Arduino_GFX_Library.h>
 #include <esp_heap_caps.h>
-
 #include "board_config.h"
 
 // Real, board-specific ST7701 init table. Sourced verbatim (not hand-typed)

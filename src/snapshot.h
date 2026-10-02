@@ -31,6 +31,19 @@ struct TariffSlot {
 // a 466 px screen, so extras are dropped at parse time.
 static constexpr size_t SNAPSHOT_MAX_TARIFF_SLOTS = 4;
 
+struct RateSlot {
+  float pence = 0.0f;
+  bool valid = false;
+};
+
+struct DayTariffRates {
+  RateSlot import_slots[48];
+  RateSlot export_slots[48];
+  bool import_valid = false;
+  bool export_valid = false;
+  uint32_t fetched_time = 0;
+};
+
 struct Snapshot {
   // False until a payload has parsed. Screens must not read anything below
   // this while it is false.
@@ -149,6 +162,8 @@ struct Snapshot {
     size_t next_count = 0;
   };
   Cost cost;
+
+  DayTariffRates day_rates;
 };
 
 // Parses an /api/summary payload.
