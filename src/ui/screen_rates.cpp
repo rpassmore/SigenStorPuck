@@ -173,7 +173,7 @@ lv_obj_t* screen_rates_create(lv_obj_t* parent) {
 
   // Vertical line cursor for active slot
   s_cursor = lv_chart_add_cursor(s_chart, lv_color_hex(PUCK_COLOUR_MUTED), LV_DIR_VER);
-  lv_obj_set_style_line_opa(s_chart, LV_OPA_50, LV_PART_CURSOR | LV_STATE_DEFAULT);
+  lv_obj_set_style_line_opa(s_chart, LV_OPA_60, LV_PART_CURSOR | LV_STATE_DEFAULT);
 
 
   // Title
@@ -271,9 +271,9 @@ void screen_rates_update(const Snapshot& snapshot) {
 
   // Position vertical line cursor at active slot index based on timestamp
   uint8_t slot_idx = 0;
-  time_t now = snapshot.ts != 0 ? static_cast<time_t>(snapshot.ts) : time(nullptr);
+  time_t now = time(nullptr);
   struct tm tm_now = {};
-  if (localtime_r(&now, &tm_now) != nullptr) {
+  if (gmtime_r(&now, &tm_now) != nullptr) {
     uint8_t calculated = (tm_now.tm_hour * 2) + (tm_now.tm_min >= 30 ? 1 : 0);
     slot_idx = calculated < 48 ? calculated : 47;
   }
@@ -319,7 +319,7 @@ void screen_rates_update(const Snapshot& snapshot) {
   char text[32];
   char scratch[16];
 
-  const bool time_valid = (localtime_r(&now, &tm_now) != nullptr);
+  const bool time_valid = (gmtime_r(&now, &tm_now) != nullptr);
   MaybeFloat rate_imp_now;
   if (time_valid && rates.import_valid && rates.import_slots[slot_idx].valid) {
     rate_imp_now.known = true;
@@ -387,6 +387,7 @@ void screen_rates_update(const Snapshot& snapshot) {
         LV_PART_MAIN);
   }
 }
+
 
 
 
