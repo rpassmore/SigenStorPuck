@@ -80,8 +80,6 @@ FetchResult fetch_products() {
 
     const String url = String(HOST) + "?available_at=" + time_str;
     
-    Serial.printf("%s\n", url);
-
     if (!http.begin(tls, url)) {
       last_error = FetchResult::TlsFailed;
       continue;

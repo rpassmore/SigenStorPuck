@@ -350,12 +350,15 @@ void screen_rates_update(const Snapshot& snapshot) {
   for (size_t i = 0; i < SNAPSHOT_MAX_TARIFF_SLOTS; ++i) {
     const size_t next_idx = slot_idx + 1 + i;
     bool has_slot = false;
-    float slot_pence = 0.0f;
+    float slot_imp_pence = 0.0f;
+    float slot_exp_pence = 0.0f;
     int32_t ahead = 0;
 
-    if (time_valid && rates.import_valid && next_idx < 48 && rates.import_slots[next_idx].valid) {
+    if (time_valid && rates.import_valid && rates.export_valid && next_idx < 48 
+        && rates.import_slots[next_idx].valid && rates.export_slots[next_idx].valid) {
       has_slot = true;
-      slot_pence = rates.import_slots[next_idx].pence;
+      slot_imp_pence = rates.import_slots[next_idx].pence;
+      slot_exp_pence = rates.export_slots[next_idx].pence;
       ahead = static_cast<int32_t>(next_idx * 1800) - seconds_since_midnight;
     } 
 
@@ -369,14 +372,16 @@ void screen_rates_update(const Snapshot& snapshot) {
     puck_format_offset(ahead, scratch, sizeof(scratch));
     lv_label_set_text(s_slot_when[i], scratch);
 
-    snprintf(text, sizeof(text), "%.1fp", slot_pence);
+    // Import price
+    snprintf(text, sizeof(text), "%.1fp", slot_imp_pence);
     lv_label_set_text(s_slot_price_imp[i], text);
     lv_obj_set_style_text_color(
         s_slot_price_imp[i],
-        lv_color_hex(colour_for_price(slot_pence, rate_imp_now)),
+        lv_color_hex(colour_for_price(slot_imp_pence, rate_imp_now)),
         LV_PART_MAIN);
     
-    snprintf(text, sizeof(text), "%.1fp", slot_pence);
+    // Export price
+    snprintf(text, sizeof(text), "%.1fp", slot_exp_pence);
     lv_label_set_text(s_slot_price_exp[i], text);
     lv_obj_set_style_text_color(
         s_slot_price_exp[i], lv_color_hex(PUCK_COLOUR_EXPORT),
