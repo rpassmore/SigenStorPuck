@@ -148,8 +148,8 @@ lv_obj_t* screen_rates_create(lv_obj_t* parent) {
   lv_chart_set_type(s_chart, LV_CHART_TYPE_LINE);
   lv_chart_set_point_count(s_chart, 48);
   lv_obj_set_style_size(s_chart, 0, LV_PART_INDICATOR);
-  lv_obj_set_style_bg_opa(s_chart, LV_OPA_30, LV_PART_INDICATOR | LV_STATE_DEFAULT);
-  lv_obj_set_style_line_opa(s_chart, LV_OPA_30, LV_PART_ITEMS | LV_STATE_DEFAULT);
+  lv_obj_set_style_bg_opa(s_chart, LV_OPA_40, LV_PART_INDICATOR | LV_STATE_DEFAULT);
+  lv_obj_set_style_line_opa(s_chart, LV_OPA_40, LV_PART_ITEMS | LV_STATE_DEFAULT);
   lv_obj_add_event_cb(s_chart, chart_draw_event_cb, LV_EVENT_DRAW_PART_BEGIN, NULL);
 
 
@@ -256,14 +256,13 @@ void screen_rates_update(const Snapshot& snapshot) {
   const bool configured = snapshot.valid && rates.import_valid && rates.export_valid;
 
   if (!configured) {
-    lv_label_set_text(s_rate_imp_now, "");
-    lv_label_set_text(s_rate_exp_now, "");
+    lv_label_set_text(s_rate_imp_now, "Not configured");
+    lv_label_set_text(s_rate_exp_now, "Not configured");
     lv_obj_add_flag(s_slots_box, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(s_unconfigured, LV_OBJ_FLAG_HIDDEN);
     lv_label_set_text(s_unconfigured, snapshot.valid ? "no tariff set" : "offline");
     
     lv_obj_add_flag(s_chart, LV_OBJ_FLAG_HIDDEN);
-    // lv_obj_clear_flag(s_unconfigured, LV_OBJ_FLAG_HIDDEN);
     return;
   }
   lv_obj_clear_flag(s_slots_box, LV_OBJ_FLAG_HIDDEN);
