@@ -5,6 +5,7 @@
 #include <time.h>
 
 #include "board_config.h"
+#include "chart_band.h"
 #include "history.h"
 #include "qr_block.h"
 #include "screen_battery.h"
@@ -43,7 +44,7 @@ PuckScreen s_screen_at[MAX_SCREENS] = {};
 // curved in to y=216. Any lower and the row runs into the end of the arc — which
 // is what it used to do. Screen 3's day band was raised to keep its own
 // clearance, and this moved down two pixels to leave the day indicator a gap.
-constexpr lv_coord_t DOTS_Y = 204;
+constexpr lv_coord_t DOTS_Y = 196;   // landscape: page dots near the bottom edge
 constexpr lv_coord_t DOT_SIZE = 7;
 constexpr lv_coord_t DOT_GAP = 10;
 
@@ -101,12 +102,12 @@ DayState s_day_state = DayState::Live;
 // The top of the screen: transient messages, and "LOADING" while a chosen day is
 // on its way, which is the same kind of thing — something happening rather than
 // something that is.
-constexpr lv_coord_t TOAST_Y = -208;
+constexpr lv_coord_t TOAST_Y = -195; // landscape: toast near the top edge
 
 // The day indicator sits just above the page dots, because it is the same kind of
 // thing they are: persistent state. Sharing the top with the toast meant a
 // message blanked the very date it was answering about.
-constexpr lv_coord_t CHIP_Y = 183;
+constexpr lv_coord_t CHIP_Y = 168;   // landscape: day chip just above the dots
 constexpr uint32_t TOAST_MS = 1600;
 
 // The address the overlay's QR points at, kept so the code is re-encoded when
@@ -288,6 +289,10 @@ void on_tile_changed(lv_event_t* /*event*/) {
 }
 
 void on_tile_scroll_begin(lv_event_t* event) {
+  // Freeze the ghosted charts for the whole drag-and-settle: on the rotated panel
+  // repainting hundreds of chart slices per slide frame is what made the swipe
+  // drag. They redraw once when it settles.
+  chart_band_pause_all(true);
   if (lv_anim_t* animation = lv_event_get_scroll_anim(event)) {
     lv_anim_set_time(animation, SWIPE_SETTLE_MS);
     ui_perf_swipe_settle(SWIPE_SETTLE_MS);
@@ -307,6 +312,8 @@ void on_tile_scroll_end(lv_event_t* /*event*/) {
   if (active == nullptr || lv_obj_get_scroll_x(s_tileview) != lv_obj_get_x(active)) {
     return;
   }
+  // Settled: let the charts draw again.
+  chart_band_pause_all(false);
   const int current = ui_current_screen();
   ui_perf_transition_ready(current, screen_has_chart(current));
 }
@@ -320,10 +327,6 @@ lv_obj_t* ui_create(lv_obj_t* parent, const UiConfig& config) {
   if (!config.with_detailed_screens) {
     wanted &= static_cast<uint8_t>(~PUCK_DETAILED_SCREENS);
   }
-  // The round UI does not build the landscape-only screens (the grid screen), so
-  // drop them whatever the stored mask says — otherwise their tile would exist
-  // with nothing drawn on it.
-  wanted &= static_cast<uint8_t>(~PUCK_LANDSCAPE_ONLY_SCREENS);
   // Screen 1 is the device's reason to exist and the one every failure mode
   // falls back to. Leaving nothing but the settings screen would look broken.
   wanted |= (1u << PUCK_SCREEN_POWER);

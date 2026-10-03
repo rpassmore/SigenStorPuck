@@ -16,6 +16,7 @@
 #include "button_gesture.h"
 #include "day_series.h"
 #include "display_rotation.h"
+#include "forecast_store.h"
 #include "history.h"
 #include "history_backfill_retry.h"
 #include "home_assistant.h"
@@ -351,6 +352,28 @@ void test_server_forecast() {
   check_near(snapshot.solar.peak_kw.value, 4.8f, "server forecast peak unchanged");
 }
 
+// Grid frequency and voltage arrive in /api/summary's power block from server
+// 0.26.0; an older server simply omits them, and they must stay unknown rather
+// than read as a 0 Hz grid.
+void test_server_grid_ac() {
+  printf("server grid AC\n");
+  const char* payload =
+      "{\"v\":1,\"ts\":1788970000,\"ok\":true,"
+      "\"power\":{\"grid\":-1.1,\"grid_freq_hz\":49.98,\"grid_voltage_v\":241.3}}";
+  Snapshot snapshot;
+  check(snapshot_parse(payload, strlen(payload), &snapshot), "server payload with grid AC parses");
+  check(snapshot.power.grid_freq_hz.known, "grid frequency read from the power block");
+  check_near(snapshot.power.grid_freq_hz.value, 49.98f, "grid frequency unchanged");
+  check(snapshot.power.grid_voltage_v.known, "grid voltage read from the power block");
+  check_near(snapshot.power.grid_voltage_v.value, 241.3f, "grid voltage unchanged");
+
+  const char* older = "{\"v\":1,\"ts\":1788970000,\"ok\":true,\"power\":{\"grid\":-1.1}}";
+  Snapshot old_snapshot;
+  check(snapshot_parse(older, strlen(older), &old_snapshot), "pre-0.26 payload parses");
+  check(!old_snapshot.power.grid_freq_hz.known && !old_snapshot.power.grid_voltage_v.known,
+        "an older server leaves grid frequency and voltage unknown");
+}
+
 void test_solar_metric_layout() {
   printf("solar metric layout\n");
   // Driven by what a source can supply, never by a reading. The type makes that
@@ -571,15 +594,21 @@ void test_plan() {
     check(spans[1].start == 31509 && spans[1].words == 2, "inverter slow second span");
   }
 
+  // Grid frequency (31002) and phase-A voltage (31011-12) merge into one 11-word
+  // read, taken from every inverter. The DC output at 31502 is a separate
+  // cadence, read only from an inverter with a DC charger — folding it into the
+  // fast set is what once left frequency and voltage unread on every other one.
   count = modbus_plan(ModbusScope::Inverter, ModbusCadence::Fast, spans, 8);
-  check(count == 1 && spans[0].start == 31502 && spans[0].words == 2, "inverter fast span");
+  check(count == 1 && spans[0].start == 31002 && spans[0].words == 11, "inverter fast span");
+  count = modbus_plan(ModbusScope::Inverter, ModbusCadence::DcCharger, spans, 8);
+  check(count == 1 && spans[0].start == 31502 && spans[0].words == 2, "DC charger span");
 
   count = modbus_plan(ModbusScope::AcCharger, ModbusCadence::Fast, spans, 8);
   check(count == 1 && spans[0].start == 32003 && spans[0].words == 2, "charger span");
 
   // No span may exceed the protocol's own ceiling.
   for (int scope = 0; scope < 3; ++scope) {
-    for (int cadence = 0; cadence < 2; ++cadence) {
+    for (int cadence = 0; cadence < 3; ++cadence) {
       const size_t n = modbus_plan(static_cast<ModbusScope>(scope),
                                    static_cast<ModbusCadence>(cadence), spans, 8);
       for (size_t i = 0; i < n; ++i) {
@@ -1264,6 +1293,7 @@ void test_day_series() {
   snprintf(json, sizeof(json),
            "{\"slot_minutes\":15,\"day_start\":%u,\"tz_offset_min\":60,"
            "\"solar_kw\":[0.0,1.5,3.0,4.5],"
+           "\"grid_kw\":[1.2,-2.0,0.8,-1.5],"
            "\"soc_pct\":[null,40.0,55.0,70.0]}",
            static_cast<unsigned>(day_start));
 
@@ -1287,6 +1317,16 @@ void test_day_series() {
   check(columns[2].known && columns[2].max_value == 3.0f, "the part-elapsed slot is filled");
   check(!columns[3].known, "the slot that has not happened stays empty");
 
+  // Grid is signed: import positive, export negative. A negative slot must keep
+  // its sign through the ring, or the grid chart draws an export as an import.
+  HistoryColumn grid_cols[4];
+  history_reduce(HistoryBank::Live, HistorySeries::Grid, midnight_minute, midnight_minute + 60,
+                 grid_cols, 4);
+  check(grid_cols[0].known && grid_cols[0].max_value == 1.2f, "grid import slot stays positive");
+  check(grid_cols[1].known && grid_cols[1].max_value == -2.0f, "grid export slot stays negative");
+  check(grid_cols[2].known && grid_cols[2].max_value == 0.8f, "the part-elapsed grid slot is filled");
+  check(!grid_cols[3].known, "the grid slot that has not happened stays empty");
+
   // The timezone came from the payload, which is the only place the server path
   // gets a trustworthy one.
   uint32_t from = 0;
@@ -1298,7 +1338,43 @@ void test_day_series() {
   check(!day_series_parse(HistoryBank::Live, "{\"slot_minutes\":15}", 19, now), "a payload with no day is rejected");
   check(!day_series_parse(HistoryBank::Live, json, strlen(json), 0), "no clock means nothing is filed");
 
+  // forecast_kw, when present, feeds forecast_store for the solar screen to draw
+  // ahead of now — and unlike the recorded series it is stored for the whole day,
+  // future slots included, because "the forecast ahead" is precisely the
+  // unelapsed half. Four coarse slots stand in for the day's ninety-six.
+  forecast_store_clear();
+  char with_fc[640];
+  snprintf(with_fc, sizeof(with_fc),
+           "{\"slot_minutes\":15,\"day_start\":%u,\"tz_offset_min\":60,"
+           "\"solar_kw\":[0.0,1.5,3.0,4.5],"
+           "\"soc_pct\":[null,40.0,55.0,70.0],"
+           "\"forecast_kw\":[1.0,2.0,4.0,3.0]}",
+           static_cast<unsigned>(day_start));
+  check(day_series_parse(HistoryBank::Live, with_fc, strlen(with_fc), now),
+        "a payload carrying a forecast parses");
+  HistoryColumn fcols[4];
+  float fpeak = 0.0f;
+  check(forecast_store_columns(midnight_minute, midnight_minute + 1440, fcols, 4, &fpeak),
+        "the forecast covers the payload's own day");
+  check(fpeak > 0.0f, "the forecast has a nonzero peak");
+  check(fcols[3].known, "the forecast is stored past now, to the day's end");
+
+  // A later payload with no forecast clears the store, so a source that stops
+  // sending one leaves no stale curve on the glass.
+  check(day_series_parse(HistoryBank::Live, json, strlen(json), now),
+        "a forecast-less payload still parses");
+  check(!forecast_store_columns(midnight_minute, midnight_minute + 1440, fcols, 4, &fpeak),
+        "the forecast store clears when the payload drops it");
+
+  // A stepped-back day never feeds the forecast store — it is today's alone.
+  check(day_series_parse(HistoryBank::Day, with_fc, strlen(with_fc), now),
+        "a past-day payload parses into the Day ring");
+  check(!forecast_store_columns(midnight_minute, midnight_minute + 1440, fcols, 4, &fpeak),
+        "a past-day payload leaves the forecast store untouched");
+  forecast_store_clear();
+
   history_reset(HistoryBank::Live);
+  history_reset(HistoryBank::Day);
 }
 
 // The two rings are the point of HistoryBank: one ring cannot hold two days,
@@ -1671,6 +1747,7 @@ int run_selftest() {
   test_home_assistant_forecast();
   test_home_assistant_payload();
   test_server_forecast();
+  test_server_grid_ac();
   test_solar_metric_layout();
   test_decode();
   test_plan();

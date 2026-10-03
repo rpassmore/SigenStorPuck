@@ -6,6 +6,12 @@ It runs on a Waveshare **ESP32-S3-Touch-AMOLED-1.75** — a 466×466 round AMOLE
 capacitive touch — and shows live power flow, battery state, solar generation against
 forecast, consumption, where the day's energy went, and what it all cost.
 
+A second board is in **early-release testing**: the Waveshare
+**ESP32-S3-Touch-AMOLED-2.41 (V1 revision)**, a 600×450 landscape AMOLED. It runs the same
+firmware from this same repository, built for that board, with the screens re-laid for the
+wide rectangle. The panel, touch and landscape UI are **confirmed on real V1 hardware** —
+see **Hardware** below.
+
 ## Three ways to get data — read this first
 
 The Puck can take its readings from one of three places, and it matters which, because
@@ -105,7 +111,13 @@ Plug the Puck into a computer with a USB-C cable and open this page in **Chrome 
 It flashes over WebSerial — nothing to download and no drivers to install. Safari and
 Firefox cannot do this, and neither can anything on an iPhone or iPad.
 
-After the first flash the Puck updates itself — see **Firmware** below.
+The installer asks which board you have — the **1.75″ round** or the **2.41″ landscape** —
+and each flashes its own build. **The 2.41 is early-release testing** (V1 revision only —
+the later V2 wires the board differently and is not currently supported); the 1.75 is the
+primary board.
+
+After the first flash the Puck updates itself — each board from its own build — see
+**Firmware** below.
 
 ### 2. Join it to your WiFi
 
@@ -379,6 +391,8 @@ edge, either side of centre.
 
 ## Hardware
 
+**1.75″ round** — the primary, verified board.
+
 | | |
 |---|---|
 | Board | Waveshare ESP32-S3-Touch-AMOLED-1.75 |
@@ -387,10 +401,32 @@ edge, either side of centre.
 | MCU | ESP32-S3R8, 8 MB PSRAM, 16 MB flash |
 | Also on board | AXP2101 PMIC, PCF85063 RTC, QMI8658 IMU |
 
+**2.41″ landscape — early-release testing.** The **V1 hardware revision specifically** (the
+later V2 routes the display and touch resets through the board's I/O expander and repurposes
+GPIO21 as the panel's tearing-effect line, so it needs its own profile and is not currently
+supported — check which revision your board is before flashing; a V1 carries no "Rev2.0"
+silkscreen). On V1 the panel (RM690B0, driven with an SH8601-compatible init sequence over a
+GPIO21 reset), the FT6336 touch and the landscape UI are **confirmed on real hardware**,
+including the software portrait-to-landscape rotation.
+
+| | |
+|---|---|
+| Board | Waveshare ESP32-S3-Touch-AMOLED-2.41, **V1 revision** |
+| Display | 600×450 landscape AMOLED, RM690B0 over QSPI (SH8601-compatible init) |
+| Touch | FT6336 (FocalTech FT5x06 family), I2C |
+| MCU | ESP32-S3R8, 8 MB PSRAM, 16 MB flash |
+| Also on board | PCF85063 RTC, QMI8658 IMU, TCA9554 I/O expander (no AXP2101 PMIC); V1 drives the display and touch resets from GPIO directly |
+
 ## Building it yourself
 
 ```bash
 pio run -e puck -t upload -t monitor
+```
+
+For the 2.41″ landscape board (early-release testing) use the `puck241` environment:
+
+```bash
+pio run -e puck241 -t upload -t monitor
 ```
 
 Screens are developed against canned payloads on the desktop rather than by reflashing,
@@ -398,6 +434,12 @@ which is where every screenshot above came from:
 
 ```bash
 pio run -e sim && .pio/build/sim/program
+```
+
+The landscape screens have their own simulator, `sim241`:
+
+```bash
+pio run -e sim241 && .pio/build/sim241/program
 ```
 
 `n`/`p` change fixture, `[`/`]` change screen, `d` shows the parsed data behind what you

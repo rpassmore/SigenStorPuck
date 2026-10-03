@@ -21,6 +21,24 @@
 // reads without competing with the number in front of it.
 lv_obj_t* chart_band_create(lv_obj_t* parent, HistorySeries series, uint32_t colour);
 
+// Pauses (or resumes) drawing of every band. A paused band skips its draw
+// callback entirely, so a tileview swipe does not repaint hundreds of chart
+// slices per frame through the rotated flush. Resuming redraws each band once.
+void chart_band_pause_all(bool paused);
+
+// Feeds a band its reduced columns directly, for a curve that does not live in
+// the history ring — the PV forecast, whose future half the ring cannot hold.
+// The band is drawn exactly as a refreshed one; do not also chart_band_refresh()
+// it. `drawn_min`/`drawn_max` set the vertical scale (match the actual band's so
+// the two align). chart_band_clear() hides it again.
+void chart_band_set_columns(lv_obj_t* band, const HistoryColumn* cols, size_t n,
+                            float drawn_min, float drawn_max);
+void chart_band_clear(lv_obj_t* band);
+
+// How many columns this band draws across its current width — so a caller feeding
+// chart_band_set_columns() supplies exactly enough to reach both edges.
+size_t chart_band_column_count(lv_obj_t* band);
+
 // Fixes the vertical range. Pass max <= min to scale to whatever the window
 // holds, which is what PV wants; SoC wants a fixed 0-100 so the curve's height
 // means the same thing every time you look at it.
@@ -32,6 +50,13 @@ void chart_band_set_range(lv_obj_t* band, float min_value, float max_value);
 // under the curve down to nothing at the foot, and the cap stays about twice as
 // strong so the shape of the day still reads through the text on top.
 void chart_band_set_intensity(lv_obj_t* band, lv_opa_t intensity);
+
+// Switches a band to bipolar: a signed series drawn about a centre zero line,
+// filling up in the band's `colour` for positive readings and down in
+// `colour_neg` for negative ones, with a faint rule on zero. The vertical range
+// is forced symmetric so the baseline sits at the band's middle. This is what the
+// grid screen uses to draw import above the line and export below it.
+void chart_band_set_bipolar(lv_obj_t* band, bool on, uint32_t colour_neg);
 
 // Confines the band to a circle centred on the display, radius `radius`; 0 (the
 // default) leaves it rectangular.
