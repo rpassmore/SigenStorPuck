@@ -75,7 +75,7 @@
 // --------------------------------------------------------------- geometry ----
 
 // Guition ESP32-4848S040: set to 130 as thats what the only app.lcdwizard.com uses for this board
-#define LV_DPI_DEF 130
+#define LV_DPI_DEF 170
 
 // ----------------------------------------------------------------- fonts ----
 

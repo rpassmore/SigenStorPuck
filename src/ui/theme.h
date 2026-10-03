@@ -40,7 +40,13 @@ static constexpr lv_coord_t PUCK_RING_WIDTH = 6;
 
 // Montserrat subsets from src/ui/fonts/, declared by LV_FONT_CUSTOM_DECLARE in
 // include/lv_conf.h. Named by role so a size change is one edit here.
-#define PUCK_FONT_SMALL (&puck_font_14)
-#define PUCK_FONT_BODY (&puck_font_20)
-#define PUCK_FONT_LARGE (&puck_font_28)
-#define PUCK_FONT_HERO (&puck_font_48)
+// #define PUCK_FONT_SMALL (&puck_font_14)
+// #define PUCK_FONT_BODY (&puck_font_20)
+// #define PUCK_FONT_LARGE (&puck_font_28)
+// #define PUCK_FONT_HERO (&puck_font_48)
+
+#define PUCK_FONT_TINY (&lv_font_montserrat_14)
+#define PUCK_FONT_SMALL (&lv_font_montserrat_16)
+#define PUCK_FONT_BODY (&lv_font_montserrat_20)
+#define PUCK_FONT_LARGE (&lv_font_montserrat_28)
+#define PUCK_FONT_HERO (&lv_font_montserrat_48)

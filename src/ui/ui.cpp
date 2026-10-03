@@ -349,7 +349,7 @@ lv_obj_t* ui_create(lv_obj_t* parent, const UiConfig& config) {
   // The day indicator and the toast: siblings of the tileview like the dots, so
   // they stay put while the screens slide underneath.
   s_day_chip = lv_label_create(parent);
-  lv_obj_set_style_text_font(s_day_chip, PUCK_FONT_SMALL, LV_PART_MAIN);
+  lv_obj_set_style_text_font(s_day_chip, PUCK_FONT_TINY, LV_PART_MAIN);
   lv_obj_set_style_text_color(s_day_chip, lv_color_hex(PUCK_COLOUR_WARN), LV_PART_MAIN);
   lv_obj_set_style_text_letter_space(s_day_chip, 2, LV_PART_MAIN);
   lv_obj_set_style_text_align(s_day_chip, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
@@ -358,7 +358,7 @@ lv_obj_t* ui_create(lv_obj_t* parent, const UiConfig& config) {
   lv_obj_add_flag(s_day_chip, LV_OBJ_FLAG_HIDDEN);
 
   s_toast = lv_label_create(parent);
-  lv_obj_set_style_text_font(s_toast, PUCK_FONT_SMALL, LV_PART_MAIN);
+  lv_obj_set_style_text_font(s_toast, PUCK_FONT_TINY, LV_PART_MAIN);
   lv_obj_set_style_text_color(s_toast, lv_color_hex(PUCK_COLOUR_TEXT), LV_PART_MAIN);
   lv_obj_set_style_text_letter_space(s_toast, 1, LV_PART_MAIN);
   lv_obj_set_style_text_align(s_toast, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);

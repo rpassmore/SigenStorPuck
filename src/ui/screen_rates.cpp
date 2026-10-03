@@ -212,7 +212,7 @@ lv_obj_t* screen_rates_create(lv_obj_t* parent) {
   lv_obj_set_size(s_slots_box, ROW_WIDTH, LV_SIZE_CONTENT);
   lv_obj_set_flex_flow(s_slots_box, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_style_pad_row(s_slots_box, 6, LV_PART_MAIN);
-  lv_obj_align(s_slots_box, LV_ALIGN_CENTER, 0, 50);
+  lv_obj_align(s_slots_box, LV_ALIGN_CENTER, 0, 55);
 
   for (size_t i = 0; i < SNAPSHOT_MAX_TARIFF_SLOTS; ++i) {
     lv_obj_t* row = make_group(s_slots_box);
@@ -223,7 +223,7 @@ lv_obj_t* screen_rates_create(lv_obj_t* parent) {
     s_slot_rows[i] = row;
 
     s_slot_when[i] = make_label(row, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED);
-    lv_obj_set_width(s_slot_when[i], 70);
+    lv_obj_set_width(s_slot_when[i], 80);
     lv_obj_set_style_text_align(s_slot_when[i], LV_TEXT_ALIGN_LEFT, LV_PART_MAIN);
     lv_label_set_text(s_slot_when[i], "");
 
@@ -241,7 +241,7 @@ lv_obj_t* screen_rates_create(lv_obj_t* parent) {
   s_unconfigured = make_label(s_root, PUCK_FONT_BODY, PUCK_COLOUR_MUTED);
   lv_label_set_text(s_unconfigured, "no tariff set");
   lv_obj_set_style_text_align(s_unconfigured, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-  lv_obj_align(s_unconfigured, LV_ALIGN_CENTER, 0, 0);
+  lv_obj_align(s_unconfigured, LV_ALIGN_CENTER, 0, 50);
   lv_obj_add_flag(s_unconfigured, LV_OBJ_FLAG_HIDDEN);
 
   return s_root;
@@ -256,8 +256,8 @@ void screen_rates_update(const Snapshot& snapshot) {
   const bool configured = snapshot.valid && rates.import_valid && rates.export_valid;
 
   if (!configured) {
-    lv_label_set_text(s_rate_imp_now, "Not configured");
-    lv_label_set_text(s_rate_exp_now, "Not configured");
+    lv_label_set_text(s_rate_imp_now, snapshot.valid ? "no tariff set" : "offline");
+    lv_label_set_text(s_rate_exp_now, snapshot.valid ? "no tariff set" : "offline");
     lv_obj_add_flag(s_slots_box, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(s_unconfigured, LV_OBJ_FLAG_HIDDEN);
     lv_label_set_text(s_unconfigured, snapshot.valid ? "no tariff set" : "offline");
