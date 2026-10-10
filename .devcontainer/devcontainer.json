@@ -1,0 +1,25 @@
+{
+    "name": "SigenStorPuck",
+
+    "dockerComposeFile": "../compose.yaml",
+    "service": "dev",
+    "workspaceFolder": "/workspace",
+
+    "shutdownAction": "stopCompose",
+
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "platformio.platformio-ide",
+                "ms-vscode.cpptools",
+                "ms-vscode.cmake-tools"
+            ],
+            "settings": {
+                "platformio-ide.disablePIOHome": true,
+                "C_Cpp.default.cppStandard": "c++17"
+            }
+        }
+    },
+
+    "remoteUser": "vscode"
+}
