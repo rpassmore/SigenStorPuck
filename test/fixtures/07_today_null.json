@@ -41,7 +41,7 @@
   },
   "day_rates": {
     "import_valid": true,
-    "export_valid": true,
+    "export_valid": false,
     "import": [
       7.5,
       7.5,

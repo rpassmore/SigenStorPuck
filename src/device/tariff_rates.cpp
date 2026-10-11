@@ -7,6 +7,7 @@
 #include <time.h>
 
 #include "board_config.h"
+#include "poller.h"
 #include "settings.h"
 
 namespace {
@@ -16,7 +17,7 @@ constexpr uint16_t CONNECT_TIMEOUT_MS = 5000;
 constexpr uint16_t TOTAL_TIMEOUT_MS = 10000;
 constexpr int TARIFF_SLOT_COUNT = 48;
 constexpr int64_t HALF_HOUR_SECONDS = 30 * 60;
-constexpr uint16_t MAX_API_PAGES = 1;
+constexpr uint16_t MAX_API_PAGES = 3;
 
 constexpr const char* USER_AGENT = "SigenStorPuck/" PUCK_FW_VERSION " (ESP32-S3)";
 
@@ -29,20 +30,40 @@ FetchResult s_last_result = FetchResult::NotConfigured;
 String s_last_import_code;
 String s_last_export_code;
 int s_last_fetch_day_of_year = -1;
+int s_last_fetch_min_of_day = -1;
 
 bool clock_is_plausible() {
   return time(nullptr) > 1704067200;  // 1 Jan 2024
 }
 
-String build_tariff_url(const String& product_code) {
+String build_tariff_url(const String& product_code, time_t day_start, time_t day_end) {
+  String url;
   if (product_code.startsWith("E-1R-") || product_code.startsWith("E-2R-")) {
-    return "https://api.octopus.energy/v1/products/" + product_code + "/standard-unit-rates/";
+    url = "https://api.octopus.energy/v1/products/" + product_code + "/standard-unit-rates/";
+  } else {
+    // Standard product code like AGILE-24-10-01 -> assume Region L (South West)
+    // or direct product path.
+    url = "https://api.octopus.energy/v1/products/" + product_code +
+           "/electricity-tariffs/E-1R-" + product_code + "-L/standard-unit-rates/";
   }
 
-  // Standard product code like AGILE-24-10-01 -> assume Region L (South West)
-  // or direct product path.
-  return "https://api.octopus.energy/v1/products/" + product_code +
-         "/electricity-tariffs/E-1R-" + product_code + "-L/standard-unit-rates/";
+  if (day_start > 0 && day_end > day_start) {
+    char from_buf[32];
+    char to_buf[32];
+    struct tm tm_from = {};
+    struct tm tm_to = {};
+    gmtime_r(&day_start, &tm_from);
+    gmtime_r(&day_end, &tm_to);
+    snprintf(from_buf, sizeof(from_buf), "%04d-%02d-%02dT%02d:%02d:%02dZ",
+             tm_from.tm_year + 1900, tm_from.tm_mon + 1, tm_from.tm_mday,
+             tm_from.tm_hour, tm_from.tm_min, tm_from.tm_sec);
+    snprintf(to_buf, sizeof(to_buf), "%04d-%02d-%02dT%02d:%02d:%02dZ",
+             tm_to.tm_year + 1900, tm_to.tm_mon + 1, tm_to.tm_mday,
+             tm_to.tm_hour, tm_to.tm_min, tm_to.tm_sec);
+    url += "?period_from=" + String(from_buf) + "&period_to=" + String(to_buf) + "&page_size=100";
+  }
+
+  return url;
 }
 
 void clear_slots(RateSlot slots[TARIFF_SLOT_COUNT]) {
@@ -107,7 +128,7 @@ bool parse_octopus_timestamp(const char* value, time_t* out) {
 }
 
 bool get_local_day_bounds(time_t now, time_t* day_start, time_t* day_end) {
-  if (!day_start || !day_end) {
+  if (!day_start || !day_end || now <= 0) {
     return false;
   }
 
@@ -200,7 +221,7 @@ FetchResult fetch_rates_for_code(const String& product_code, RateSlot slots[TARI
   tls.setCACertBundle(rootca_crt_bundle_start,
                     static_cast<size_t>(rootca_crt_bundle_end - rootca_crt_bundle_start));
 
-  String url = build_tariff_url(product_code);
+  String url = build_tariff_url(product_code, day_start, day_end);
   int loaded_count = 0;
   bool saw_results = false;
 
@@ -327,14 +348,21 @@ FetchResult tariff_rates_service() {
 
   const bool code_changed = (imp_code != s_last_import_code) ||
                             (exp_code != s_last_export_code);
-  const bool day_changed = clock_ok && (tm_now.tm_yday != s_last_fetch_day_of_year);
+  const bool day_changed = clock_ok && (s_last_fetch_day_of_year != -1) &&
+                            (tm_now.tm_yday != s_last_fetch_day_of_year);
   bool fetch_due = false;
 
-  if (
-      (!imp_code.isEmpty() && !s_rates.import_valid) ||
-      (!exp_code.isEmpty() && !s_rates.export_valid)) {
+  if (day_changed) {
+    // Midnight rollover to a new day. Old slots are stale.
+    s_rates.import_valid = false;
+    s_rates.export_valid = false;
+    s_last_fetch_min_of_day = -1;
     fetch_due = true;
-  } else if (clock_ok && day_changed && current_min >= target_fetch_min) {
+  } else if ((!imp_code.isEmpty() && !s_rates.import_valid) ||
+             (!exp_code.isEmpty() && !s_rates.export_valid)) {
+    fetch_due = true;
+  } else if (clock_ok && current_min >= target_fetch_min &&
+             s_last_fetch_min_of_day < target_fetch_min) {
     fetch_due = true;
   }
 
@@ -371,6 +399,7 @@ FetchResult tariff_rates_service() {
       s_rates.fetched_time = static_cast<uint32_t>(now);
       if (clock_ok) {
         s_last_fetch_day_of_year = tm_now.tm_yday;
+        s_last_fetch_min_of_day = current_min;
       }
 
       Serial.printf("[tariff_rates] successfully loaded day rates for import (%s) / export (%s)\n",
@@ -392,10 +421,13 @@ const DayTariffRates& tariff_rates_get() {
 
 uint8_t tariff_rates_get_current_slot() {
   const time_t now = time(nullptr);
-  struct tm tm_now = {};
-  if (gmtime_r(&now, &tm_now) != nullptr) {
-    const uint8_t slot = static_cast<uint8_t>((tm_now.tm_hour * 2) +
-                                              (tm_now.tm_min >= 30 ? 1 : 0));
+  if (!clock_is_plausible()) {
+    return 0;
+  }
+  time_t day_start = 0;
+  time_t day_end = 0;
+  if (get_local_day_bounds(now, &day_start, &day_end) && now >= day_start && now < day_end) {
+    const uint8_t slot = static_cast<uint8_t>((now - day_start) / HALF_HOUR_SECONDS);
     return slot < TARIFF_SLOT_COUNT ? slot : TARIFF_SLOT_COUNT - 1;
   }
 
