@@ -9,6 +9,8 @@ This device features a square 480x480 LCD display and a capacitive touch screen 
 Screen shows live power flow, battery state, solar generation against
 forecast, consumption, where the day's energy went, and what it all cost.
 
+<img src="docs/img/image-1.jpg" width="300" alt="Power flow">  <img src="docs/img/image-2.jpg" width="300" alt="Power flow">
+
 ## Two ways to get data — read this first
 
 The Puck can take its readings from either of two places, and it matters which, because
