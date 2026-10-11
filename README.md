@@ -9,11 +9,8 @@ This device features a square 480x480 LCD display and a capacitive touch screen 
 Screen shows live power flow, battery state, solar generation against
 forecast, consumption, where the day's energy went, and what it all cost.
 
-A second board is in **early-release testing**: the Waveshare
-**ESP32-S3-Touch-AMOLED-2.41 (V1 revision)**, a 600×450 landscape AMOLED. It runs the same
-firmware from this same repository, built for that board, with the screens re-laid for the
-wide rectangle. The panel, touch and landscape UI are **confirmed on real V1 hardware** —
-see **Hardware** below.
+<img src="docs/img/image-1.jpg" width="300" alt="Power flow">  <img src="docs/img/image-2.jpg" width="300" alt="Power flow">
+
 
 ## Three ways to get data — read this first
 
