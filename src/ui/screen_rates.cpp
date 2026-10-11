@@ -253,7 +253,7 @@ void screen_rates_update(const Snapshot& snapshot) {
   }
 
   const DayTariffRates& rates = snapshot.day_rates;
-  const bool configured = snapshot.valid && rates.import_valid && rates.export_valid;
+  const bool configured = snapshot.valid && (rates.import_valid || rates.export_valid);
 
   if (!configured) {
     lv_label_set_text(s_rate_imp_now, "Not configured");
@@ -328,7 +328,7 @@ void screen_rates_update(const Snapshot& snapshot) {
     snprintf(text, sizeof(text), "Buy %sp kWh", scratch);
     lv_label_set_text(s_rate_imp_now, text);
   } else {
-    lv_label_set_text(s_rate_imp_now, "Rate unknown");
+    lv_label_set_text(s_rate_imp_now, rates.import_valid ? "Rate unknown" : "No import tariff");
   }
 
   MaybeFloat rate_exp_now;
@@ -339,9 +339,8 @@ void screen_rates_update(const Snapshot& snapshot) {
     snprintf(text, sizeof(text), "Sell %sp kWh", scratch);
     lv_label_set_text(s_rate_exp_now, text);
   } else {
-    lv_label_set_text(s_rate_exp_now, "Export rate unknown");
+    lv_label_set_text(s_rate_exp_now, rates.export_valid ? "Export rate unknown" : "--");
   }
-
 
   const int32_t seconds_since_midnight =
       time_valid ? (tm_now.tm_hour * 3600 + tm_now.tm_min * 60 + tm_now.tm_sec) : 0;
@@ -351,15 +350,20 @@ void screen_rates_update(const Snapshot& snapshot) {
     bool has_slot = false;
     float slot_imp_pence = 0.0f;
     float slot_exp_pence = 0.0f;
+    bool imp_slot_valid = false;
+    bool exp_slot_valid = false;
     int32_t ahead = 0;
 
-    if (time_valid && rates.import_valid && rates.export_valid && next_idx < 48 
-        && rates.import_slots[next_idx].valid && rates.export_slots[next_idx].valid) {
-      has_slot = true;
-      slot_imp_pence = rates.import_slots[next_idx].pence;
-      slot_exp_pence = rates.export_slots[next_idx].pence;
-      ahead = static_cast<int32_t>(next_idx * 1800) - seconds_since_midnight;
-    } 
+    if (time_valid && next_idx < 48) {
+      imp_slot_valid = rates.import_valid && rates.import_slots[next_idx].valid;
+      exp_slot_valid = rates.export_valid && rates.export_slots[next_idx].valid;
+      if (imp_slot_valid || exp_slot_valid) {
+        has_slot = true;
+        slot_imp_pence = imp_slot_valid ? rates.import_slots[next_idx].pence : 0.0f;
+        slot_exp_pence = exp_slot_valid ? rates.export_slots[next_idx].pence : 0.0f;
+        ahead = static_cast<int32_t>(next_idx * 1800) - seconds_since_midnight;
+      }
+    }
 
     if (!has_slot) {
       lv_obj_add_flag(s_slot_rows[i], LV_OBJ_FLAG_HIDDEN);
@@ -372,19 +376,31 @@ void screen_rates_update(const Snapshot& snapshot) {
     lv_label_set_text(s_slot_when[i], scratch);
 
     // Import price
-    snprintf(text, sizeof(text), "%.1fp", slot_imp_pence);
-    lv_label_set_text(s_slot_price_imp[i], text);
-    lv_obj_set_style_text_color(
-        s_slot_price_imp[i],
-        lv_color_hex(colour_for_price(slot_imp_pence, rate_imp_now)),
-        LV_PART_MAIN);
-    
+    if (imp_slot_valid) {
+      snprintf(text, sizeof(text), "%.1fp", slot_imp_pence);
+      lv_label_set_text(s_slot_price_imp[i], text);
+      lv_obj_set_style_text_color(
+          s_slot_price_imp[i],
+          lv_color_hex(colour_for_price(slot_imp_pence, rate_imp_now)),
+          LV_PART_MAIN);
+    } else {
+      lv_label_set_text(s_slot_price_imp[i], "--");
+      lv_obj_set_style_text_color(s_slot_price_imp[i], lv_color_hex(PUCK_COLOUR_MUTED),
+                                  LV_PART_MAIN);
+    }
+
     // Export price
-    snprintf(text, sizeof(text), "%.1fp", slot_exp_pence);
-    lv_label_set_text(s_slot_price_exp[i], text);
-    lv_obj_set_style_text_color(
-        s_slot_price_exp[i], lv_color_hex(PUCK_COLOUR_EXPORT),
-        LV_PART_MAIN);
+    if (exp_slot_valid) {
+      snprintf(text, sizeof(text), "%.1fp", slot_exp_pence);
+      lv_label_set_text(s_slot_price_exp[i], text);
+      lv_obj_set_style_text_color(
+          s_slot_price_exp[i], lv_color_hex(PUCK_COLOUR_EXPORT),
+          LV_PART_MAIN);
+    } else {
+      lv_label_set_text(s_slot_price_exp[i], "--");
+      lv_obj_set_style_text_color(s_slot_price_exp[i], lv_color_hex(PUCK_COLOUR_MUTED),
+                                  LV_PART_MAIN);
+    }
   }
 }
 
