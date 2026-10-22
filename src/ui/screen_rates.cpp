@@ -253,7 +253,7 @@ void screen_rates_update(const Snapshot& snapshot) {
   }
 
   const DayTariffRates& rates = snapshot.day_rates;
-  const bool configured = snapshot.valid && (rates.import_valid || rates.export_valid);
+  const bool configured = (rates.import_valid || rates.export_valid);
 
   if (!configured) {
     lv_label_set_text(s_rate_imp_now, "Not configured");
@@ -269,12 +269,14 @@ void screen_rates_update(const Snapshot& snapshot) {
   lv_obj_clear_flag(s_chart, LV_OBJ_FLAG_HIDDEN);
   lv_obj_add_flag(s_unconfigured, LV_OBJ_FLAG_HIDDEN);
 
-  // Position vertical line cursor at active slot index based on timestamp
+  // Position vertical line cursor at active slot index based on UTC timestamp
+  const time_t now = time(nullptr);
+  struct tm tm_utc = {};
+  const bool time_valid = (gmtime_r(&now, &tm_utc) != nullptr);
+
   uint8_t slot_idx = 0;
-  time_t now = time(nullptr);
-  struct tm tm_now = {};
-  if (gmtime_r(&now, &tm_now) != nullptr) {
-    uint8_t calculated = (tm_now.tm_hour * 2) + (tm_now.tm_min >= 30 ? 1 : 0);
+  if (time_valid) {
+    uint8_t calculated = (tm_utc.tm_hour * 2) + (tm_utc.tm_min >= 30 ? 1 : 0);
     slot_idx = calculated < 48 ? calculated : 47;
   }
 
@@ -319,7 +321,6 @@ void screen_rates_update(const Snapshot& snapshot) {
   char text[32];
   char scratch[16];
 
-  const bool time_valid = (gmtime_r(&now, &tm_now) != nullptr);
   MaybeFloat rate_imp_now;
   if (time_valid && rates.import_valid && rates.import_slots[slot_idx].valid) {
     rate_imp_now.known = true;
@@ -343,7 +344,7 @@ void screen_rates_update(const Snapshot& snapshot) {
   }
 
   const int32_t seconds_since_midnight =
-      time_valid ? (tm_now.tm_hour * 3600 + tm_now.tm_min * 60 + tm_now.tm_sec) : 0;
+      time_valid ? (tm_utc.tm_hour * 3600 + tm_utc.tm_min * 60 + tm_utc.tm_sec) : 0;
 
   for (size_t i = 0; i < SNAPSHOT_MAX_TARIFF_SLOTS; ++i) {
     const size_t next_idx = slot_idx + 1 + i;

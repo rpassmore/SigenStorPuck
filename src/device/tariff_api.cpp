@@ -17,7 +17,7 @@ constexpr const char* HOST = "https://api.octopus.energy/v1/products/";
 constexpr uint32_t REFRESH_MS = 24 * 60 * 60 * 1000;
 
 // Retry interval on failure
-constexpr uint32_t RETRY_MS = 15 * 60 * 1000;
+constexpr uint32_t RETRY_MS = 60 * 1000;
 
 constexpr uint16_t CONNECT_TIMEOUT_MS = 4000;
 constexpr uint16_t TOTAL_TIMEOUT_MS = 8000;
@@ -174,6 +174,13 @@ FetchResult fetch_products() {
 }  // namespace
 
 FetchResult tariff_api_service() {
+  if (WiFi.status() != WL_CONNECTED) {
+    return FetchResult::NoNetwork;
+  }
+  if (!clock_is_plausible()) {
+    return FetchResult::ClockUnset;
+  }
+
   const uint32_t now_ms = millis();
   const bool stale = s_last_attempt_ms == 0 || now_ms - s_last_attempt_ms >= REFRESH_MS;
   const bool retrying_too_soon = s_last_result != FetchResult::Ok && s_last_attempt_ms != 0 &&

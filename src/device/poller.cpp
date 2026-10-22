@@ -263,6 +263,13 @@ void poll_task(void* /*argument*/) {
     }
     tariff_api_service();
     tariff_rates_service();
+    const DayTariffRates rates = tariff_rates_get();
+    if (rates.import_valid || rates.export_valid) {
+      if (s_lock != nullptr && xSemaphoreTake(s_lock, portMAX_DELAY) == pdTRUE) {
+        s_snapshot.day_rates = rates;
+        xSemaphoreGive(s_lock);
+      }
+    }
     updater_service();
 
     uint32_t wait_ms = settings_get().poll_interval_s * 1000;
