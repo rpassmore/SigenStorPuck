@@ -6,6 +6,8 @@
 #include "board_config.h"
 #include "format.h"
 #include "theme.h"
+#include "ui_bezel_ring.h"
+#include "ui_common.h"
 
 namespace {
 
@@ -105,7 +107,7 @@ Geometry s_geometry;
 
 lv_obj_t* s_root = nullptr;
 lv_obj_t* s_canvas = nullptr;
-lv_obj_t* s_arc = nullptr;
+UiBezelRing s_arc;
 lv_obj_t* s_hero = nullptr;
 lv_obj_t* s_caption = nullptr;
 
@@ -116,16 +118,6 @@ struct NodeUi {
 };
 NodeUi s_source[SRC_COUNT];
 NodeUi s_sink[SNK_COUNT];
-
-lv_obj_t* make_label(lv_obj_t* parent, const lv_font_t* font, uint32_t colour, lv_coord_t x,
-                     lv_coord_t y) {
-  lv_obj_t* label = lv_label_create(parent);
-  lv_obj_set_style_text_font(label, font, LV_PART_MAIN);
-  lv_obj_set_style_text_color(label, lv_color_hex(colour), LV_PART_MAIN);
-  lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-  lv_obj_align(label, LV_ALIGN_CENTER, x, y);
-  return label;
-}
 
 void build_node(NodeUi* node, const char* name, uint32_t colour, lv_coord_t x, lv_coord_t y) {
   node->bar = lv_obj_create(s_root);
@@ -139,21 +131,15 @@ void build_node(NodeUi* node, const char* name, uint32_t colour, lv_coord_t x, l
   lv_obj_align(node->bar, LV_ALIGN_CENTER, x, y);
 
   const lv_coord_t label_x = x < 0 ? -LABEL_X : LABEL_X;
-  node->name = make_label(s_root, PUCK_FONT_SMALL, colour, label_x, y - 11);
+  node->name = puck_create_label(s_root, PUCK_FONT_SMALL, colour, label_x, y - 11);
   lv_label_set_text(node->name, name);
-  node->value = make_label(s_root, PUCK_FONT_BODY, PUCK_COLOUR_TEXT, label_x, y + 11);
+  node->value = puck_create_label(s_root, PUCK_FONT_BODY, PUCK_COLOUR_TEXT, label_x, y + 11);
   lv_label_set_text(node->value, "--");
 }
 
 void show_node(const NodeUi& node, bool visible) {
   lv_obj_t* const parts[] = {node.bar, node.name, node.value};
-  for (lv_obj_t* part : parts) {
-    if (visible) {
-      lv_obj_clear_flag(part, LV_OBJ_FLAG_HIDDEN);
-    } else {
-      lv_obj_add_flag(part, LV_OBJ_FLAG_HIDDEN);
-    }
-  }
+  puck_set_visible(parts, sizeof(parts) / sizeof(parts[0]), visible);
 }
 
 // Eases the ribbon into and out of its endpoints so it leaves each node square
@@ -234,45 +220,25 @@ void set_node_value(const NodeUi& node, float kwh) {
 }  // namespace
 
 lv_obj_t* screen_flows_create(lv_obj_t* parent) {
-  s_root = lv_obj_create(parent);
-  lv_obj_remove_style_all(s_root);
-  lv_obj_set_size(s_root, PUCK_LCD_WIDTH, PUCK_LCD_HEIGHT);
-  lv_obj_set_style_bg_color(s_root, lv_color_hex(PUCK_COLOUR_BG), LV_PART_MAIN);
-  lv_obj_set_style_bg_opa(s_root, LV_OPA_COVER, LV_PART_MAIN);
-  lv_obj_clear_flag(s_root, LV_OBJ_FLAG_SCROLLABLE);
+  s_root = puck_create_screen_root(parent);
 
-  s_arc = lv_arc_create(s_root);
-  lv_obj_set_size(s_arc, PUCK_RING_DIAMETER, PUCK_RING_DIAMETER);
-  lv_obj_center(s_arc);
-  lv_arc_set_rotation(s_arc, 270);
-  lv_arc_set_bg_angles(s_arc, 0, 360);
-  lv_arc_set_range(s_arc, 0, 100);
-  lv_arc_set_value(s_arc, 0);
-  lv_obj_remove_style(s_arc, nullptr, LV_PART_KNOB);
-  lv_obj_clear_flag(s_arc, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_set_style_arc_width(s_arc, PUCK_RING_WIDTH, LV_PART_MAIN);
-  lv_obj_set_style_arc_width(s_arc, PUCK_RING_WIDTH, LV_PART_INDICATOR);
-  lv_obj_set_style_arc_color(s_arc, lv_color_hex(PUCK_COLOUR_TRACK), LV_PART_MAIN);
-  lv_obj_set_style_arc_color(s_arc, lv_color_hex(PUCK_COLOUR_HOME), LV_PART_INDICATOR);
-  lv_obj_add_flag(s_arc, LV_OBJ_FLAG_HIDDEN);
+  s_arc.create(s_root, PUCK_COLOUR_HOME, /*hidden=*/true);
 
   // The ribbon channel, drawn before the node bars so the bars cap the ends.
-  s_canvas = lv_obj_create(s_root);
-  lv_obj_remove_style_all(s_canvas);
-  lv_obj_clear_flag(s_canvas, LV_OBJ_FLAG_SCROLLABLE);
+  s_canvas = puck_create_group(s_root);
   lv_obj_clear_flag(s_canvas, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_set_size(s_canvas, RIBBON_X * 2, PUCK_LCD_HEIGHT);
   lv_obj_center(s_canvas);
   lv_obj_add_event_cb(s_canvas, draw_ribbons, LV_EVENT_DRAW_MAIN_END, nullptr);
 
-  lv_obj_t* title = make_label(s_root, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED, 0, -186);
+  lv_obj_t* title = puck_create_label(s_root, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED, 0, -186);
   lv_obj_set_style_text_letter_space(title, 3, LV_PART_MAIN);
   lv_label_set_text(title, "FLOWS  ·  kWh");
 
-  s_hero = make_label(s_root, PUCK_FONT_HERO, PUCK_COLOUR_TEXT, 0, -152);
+  s_hero = puck_create_label(s_root, PUCK_FONT_HERO, PUCK_COLOUR_TEXT, 0, -152);
   lv_label_set_text(s_hero, "--");
 
-  s_caption = make_label(s_root, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED, 0, -112);
+  s_caption = puck_create_label(s_root, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED, 0, -112);
   lv_label_set_text(s_caption, "self-sufficient");
 
   // Short names on purpose: the labels sit where the bezel has already closed in,
@@ -345,7 +311,7 @@ void screen_flows_update(const Snapshot& snapshot) {
     clear_geometry();
     lv_obj_invalidate(s_canvas);
     lv_label_set_text(s_hero, "--");
-    lv_obj_add_flag(s_arc, LV_OBJ_FLAG_HIDDEN);
+    s_arc.set_visible(false);
     for (const NodeUi& node : s_source) {
       show_node(node, false);
     }
@@ -413,7 +379,7 @@ void screen_flows_update(const Snapshot& snapshot) {
   const float consumed = sink_total[SNK_HOME] + sink_total[SNK_EV];
   if (consumed <= 0.0f) {
     lv_label_set_text(s_hero, "--");
-    lv_obj_add_flag(s_arc, LV_OBJ_FLAG_HIDDEN);
+    s_arc.set_visible(false);
     return;
   }
   float pct = (consumed - from_grid) / consumed * 100.0f;
@@ -426,6 +392,6 @@ void screen_flows_update(const Snapshot& snapshot) {
   char text[16];
   snprintf(text, sizeof(text), "%.0f%%", pct);
   lv_label_set_text(s_hero, text);
-  lv_arc_set_value(s_arc, static_cast<int16_t>(pct));
-  lv_obj_clear_flag(s_arc, LV_OBJ_FLAG_HIDDEN);
+  s_arc.set_value(static_cast<int16_t>(pct));
+  s_arc.set_visible(true);
 }

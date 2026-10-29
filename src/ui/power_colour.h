@@ -12,7 +12,7 @@ struct GradientConfig {
     int32_t imp_high_threshold  = 5000; // Default: -5kW turns blue
 };
 
-GradientConfig s_gradient_config;
+inline GradientConfig s_gradient_config;
 
 // Gradient Anchor Colors
 static constexpr uint32_t POWER_COLOUR_WHITE  = 0xF2F2F7;

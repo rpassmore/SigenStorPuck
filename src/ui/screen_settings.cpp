@@ -6,6 +6,7 @@
 #include "board_config.h"
 #include "qr_block.h"
 #include "theme.h"
+#include "ui_common.h"
 
 namespace {
 
@@ -24,27 +25,13 @@ lv_obj_t* s_hint = nullptr;
 char s_last_host[64] = {};
 char s_last_ip[48] = {};
 
-lv_obj_t* make_label(lv_obj_t* parent, const lv_font_t* font, uint32_t colour, lv_coord_t dy) {
-  lv_obj_t* label = lv_label_create(parent);
-  lv_obj_set_style_text_font(label, font, LV_PART_MAIN);
-  lv_obj_set_style_text_color(label, lv_color_hex(colour), LV_PART_MAIN);
-  lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-  lv_obj_align(label, LV_ALIGN_CENTER, 0, dy);
-  return label;
-}
-
 }  // namespace
 
 lv_obj_t* screen_settings_create(lv_obj_t* parent) {
-  s_root = lv_obj_create(parent);
-  lv_obj_remove_style_all(s_root);
-  lv_obj_clear_flag(s_root, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_size(s_root, PUCK_LCD_WIDTH, PUCK_LCD_HEIGHT);
-  lv_obj_set_style_bg_color(s_root, lv_color_hex(PUCK_COLOUR_BG), LV_PART_MAIN);
-  lv_obj_set_style_bg_opa(s_root, LV_OPA_COVER, LV_PART_MAIN);
+  s_root = puck_create_screen_root(parent);
   lv_obj_center(s_root);
 
-  lv_obj_t* title = make_label(s_root, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED, -168);
+  lv_obj_t* title = puck_create_label(s_root, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED, 0, -168);
   lv_label_set_text(title, "SETTINGS");
 
   s_qr = puck_qr_block_create(s_root, QR_MODULES_PX);
@@ -55,13 +42,13 @@ lv_obj_t* screen_settings_create(lv_obj_t* parent) {
   // the same brightness rather than demoted to a muted footnote. Both of these
   // exist to be read off the glass and typed into a phone, and the QR encodes the
   // IP precisely because it is the address least likely to fail.
-  s_host = make_label(s_root, PUCK_FONT_BODY, PUCK_COLOUR_TEXT, 86);
+  s_host = puck_create_label(s_root, PUCK_FONT_BODY, PUCK_COLOUR_TEXT, 0, 86);
   lv_label_set_text(s_host, "");
 
-  s_ip = make_label(s_root, PUCK_FONT_BODY, PUCK_COLOUR_TEXT, 116);
+  s_ip = puck_create_label(s_root, PUCK_FONT_BODY, PUCK_COLOUR_TEXT, 0, 116);
   lv_label_set_text(s_ip, "");
 
-  s_hint = make_label(s_root, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED, 152);
+  s_hint = puck_create_label(s_root, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED, 0, 152);
   lv_label_set_text(s_hint, "scan, or type it in a browser");
 
   screen_settings_set_address("", "");

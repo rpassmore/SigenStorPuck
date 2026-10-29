@@ -478,3 +478,27 @@ void chart_band_refresh(lv_obj_t* obj) {
 
   lv_obj_invalidate(obj);
 }
+
+#include "board_config.h"
+#include "theme.h"
+
+lv_obj_t* chart_band_create_standard(lv_obj_t* parent, HistorySeries series, uint32_t colour,
+                                     float min_value, float max_value) {
+  lv_obj_t* band = chart_band_create(parent, series, colour);
+  if (band != nullptr) {
+    constexpr lv_coord_t BAND_WIDTH = PUCK_LCD_WIDTH;
+    constexpr lv_coord_t BAND_HEIGHT = 148;
+    constexpr lv_coord_t BAND_Y = 92;
+    constexpr lv_coord_t BAND_CLIP_RADIUS = PUCK_RING_DIAMETER / 2 - PUCK_RING_WIDTH - 4;
+    constexpr lv_opa_t BAND_GHOST = 110;
+    constexpr uint8_t BAND_SMOOTHING = 7;
+
+    lv_obj_set_size(band, BAND_WIDTH, BAND_HEIGHT);
+    lv_obj_align(band, LV_ALIGN_CENTER, 0, BAND_Y);
+    chart_band_set_range(band, min_value, max_value);
+    chart_band_set_intensity(band, BAND_GHOST);
+    chart_band_set_bezel_clip(band, BAND_CLIP_RADIUS);
+    chart_band_set_smoothing(band, BAND_SMOOTHING);
+  }
+  return band;
+}

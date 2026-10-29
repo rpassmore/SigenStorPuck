@@ -7,6 +7,7 @@
 #include "format.h"
 #include "theme.h"
 #include "power_colour.h"
+#include "ui_common.h"
 
 namespace {
 
@@ -128,22 +129,6 @@ void offset_for(float degrees, lv_coord_t radius, lv_coord_t* dx, lv_coord_t* dy
 
 // ---------------------------------------------------------------- builders ---
 
-lv_obj_t* make_label(lv_obj_t* parent, const lv_font_t* font, uint32_t colour) {
-  lv_obj_t* label = lv_label_create(parent);
-  lv_obj_set_style_text_font(label, font, LV_PART_MAIN);
-  lv_obj_set_style_text_color(label, lv_color_hex(colour), LV_PART_MAIN);
-  return label;
-}
-
-// A borderless, transparent container — LVGL's default object has padding, a
-// background and a border, none of which we want for pure layout.
-lv_obj_t* make_group(lv_obj_t* parent) {
-  lv_obj_t* group = lv_obj_create(parent);
-  lv_obj_remove_style_all(group);
-  lv_obj_clear_flag(group, LV_OBJ_FLAG_SCROLLABLE);
-  return group;
-}
-
 void build_leg(LegId id, const char* name, uint32_t colour, float degrees) {
   Leg& leg = s_legs[id];
 
@@ -151,7 +136,7 @@ void build_leg(LegId id, const char* name, uint32_t colour, float degrees) {
   lv_coord_t dy = 0;
   offset_for(degrees, LEG_RADIUS, &dx, &dy);
 
-  leg.box = make_group(s_root);
+  leg.box = puck_create_group(s_root);
   lv_obj_set_size(leg.box, LEG_BOX_WIDTH, LV_SIZE_CONTENT);
   // The box width is what centres the three lines on the leg's bearing, not a
   // limit on them: "kW generating" is wider than it and would otherwise be
@@ -163,13 +148,13 @@ void build_leg(LegId id, const char* name, uint32_t colour, float degrees) {
                         LV_FLEX_ALIGN_CENTER);
   lv_obj_align(leg.box, LV_ALIGN_CENTER, dx, dy);
 
-  leg.name = make_label(leg.box, PUCK_FONT_SMALL, colour);
+  leg.name = puck_create_label(leg.box, PUCK_FONT_SMALL, colour, 0, 0, LV_ALIGN_DEFAULT);
   lv_label_set_text(leg.name, name);
 
-  leg.value = make_label(leg.box, PUCK_FONT_LARGE, PUCK_COLOUR_TEXT);
+  leg.value = puck_create_label(leg.box, PUCK_FONT_LARGE, PUCK_COLOUR_TEXT, 0, 0, LV_ALIGN_DEFAULT);
   lv_label_set_text(leg.value, "--");
 
-  leg.detail = make_label(leg.box, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED);
+  leg.detail = puck_create_label(leg.box, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED, 0, 0, LV_ALIGN_DEFAULT);
   lv_label_set_text(leg.detail, "");
 
   offset_for(degrees, FLOW_INNER, &leg.inner.x, &leg.inner.y);
@@ -180,12 +165,12 @@ void build_leg(LegId id, const char* name, uint32_t colour, float degrees) {
   leg.outer.y += CENTRE;
 
   for (int i = 0; i < FLOW_DOTS; ++i) {
-    lv_obj_t* dot = make_group(s_root);
+    lv_obj_t* dot = puck_create_group(s_root);
     lv_obj_set_size(dot, FLOW_DOT_SIZE, FLOW_DOT_SIZE);
     lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_bg_color(dot, lv_color_hex(colour), LV_PART_MAIN);
-    lv_obj_add_flag(dot, LV_OBJ_FLAG_HIDDEN);
+    puck_set_visible(dot, false);
     leg.dots[i] = dot;
   }
 }
@@ -445,13 +430,9 @@ static void draw_zero_marker(lv_draw_ctx_t* draw_ctx, lv_point_t center,
 }  // namespace
 
 lv_obj_t* screen_power_create(lv_obj_t* parent) {
-  s_root = make_group(parent);
-  lv_obj_set_size(s_root, PUCK_LCD_WIDTH, PUCK_LCD_HEIGHT);
-  lv_obj_set_style_bg_color(s_root, lv_color_hex(PUCK_COLOUR_BG), LV_PART_MAIN);
-  lv_obj_set_style_bg_opa(s_root, LV_OPA_COVER, LV_PART_MAIN);
+  s_root = puck_create_screen_root(parent);
   lv_obj_center(s_root);
 
-  
   // Power import/export ring around the bezel: always visible, never in the way.
   s_ring = lv_arc_create(s_root);
   lv_obj_set_size(s_ring, PUCK_RING_DIAMETER, PUCK_RING_DIAMETER);
@@ -469,26 +450,23 @@ lv_obj_t* screen_power_create(lv_obj_t* parent) {
 
   // The virtual plant node: inverter and gateway as one. A hairline rather than
   // a filled disc, so it reads as a boundary without competing with the legs.
-  lv_obj_t* hub = make_group(s_root);
+  lv_obj_t* hub = puck_create_group(s_root);
   lv_obj_set_size(hub, HUB_DIAMETER, HUB_DIAMETER);
   lv_obj_center(hub);
   lv_obj_set_style_radius(hub, LV_RADIUS_CIRCLE, LV_PART_MAIN);
   lv_obj_set_style_border_width(hub, 1, LV_PART_MAIN);
   lv_obj_set_style_border_color(hub, lv_color_hex(PUCK_COLOUR_TRACK), LV_PART_MAIN);
 
-  lv_obj_t* plant_name = make_label(s_root, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED);
+  lv_obj_t* plant_name = puck_create_label(s_root, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED, 0, -30);
   lv_label_set_text(plant_name, "PLANT");
-  lv_obj_align(plant_name, LV_ALIGN_CENTER, 0, -30);
 
-  s_plant_value = make_label(s_root, PUCK_FONT_LARGE, PUCK_COLOUR_TEXT);
+  s_plant_value = puck_create_label(s_root, PUCK_FONT_LARGE, PUCK_COLOUR_TEXT, 0, -4);
   lv_label_set_text(s_plant_value, "--");
-  lv_obj_align(s_plant_value, LV_ALIGN_CENTER, 0, -4);
 
   // Doubles as the unit when all is well and as the warning when it is not. A
   // stale reading or a live alarm matters more than repeating "kW".
-  s_plant_status = make_label(s_root, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED);
+  s_plant_status = puck_create_label(s_root, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED, 0, 22);
   lv_label_set_text(s_plant_status, "kW");
-  lv_obj_align(s_plant_status, LV_ALIGN_CENTER, 0, 22);
 
   // Solar at the top, then clockwise. Every leg has a fixed bearing, so the EV
   // appearing or disappearing never moves anything else.
@@ -503,17 +481,15 @@ lv_obj_t* screen_power_create(lv_obj_t* parent) {
   lv_coord_t soc_dx = 0;
   lv_coord_t soc_dy = 0;
   offset_for(180.0f, SOC_RADIUS, &soc_dx, &soc_dy);
-  s_soc_label = make_label(s_root, PUCK_FONT_SMALL, PUCK_COLOUR_BATTERY);
+  s_soc_label = puck_create_label(s_root, PUCK_FONT_SMALL, PUCK_COLOUR_BATTERY, soc_dx, soc_dy);
   lv_label_set_text(s_soc_label, "SOC --");
-  lv_obj_align(s_soc_label, LV_ALIGN_CENTER, soc_dx, soc_dy);
 
   lv_coord_t battery_dx = 0;
   lv_coord_t battery_dy = 0;
   offset_for(DEVICE_BATTERY_BEARING, DEVICE_BATTERY_RADIUS, &battery_dx, &battery_dy);
-  s_device_battery = make_label(s_root, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED);
+  s_device_battery = puck_create_label(s_root, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED, battery_dx, battery_dy);
   lv_label_set_text(s_device_battery, "");
-  lv_obj_align(s_device_battery, LV_ALIGN_CENTER, battery_dx, battery_dy);
-  lv_obj_add_flag(s_device_battery, LV_OBJ_FLAG_HIDDEN);
+  puck_set_visible(s_device_battery, false);
 
   lv_timer_create(flow_tick, FLOW_TICK_MS, nullptr);
 
