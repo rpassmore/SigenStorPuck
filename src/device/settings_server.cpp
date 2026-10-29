@@ -238,6 +238,33 @@ String page(const String& message, bool message_is_error) {
   html += String(ESP.getMaxAllocHeap() / 1024) + " KB";
   html += "</p>";
 
+  // Heap diagnostics — useful for detecting memory fragmentation over long uptimes.
+  // getFreeHeap()    : current total free bytes (fragmented or not).
+  // getMaxAllocHeap(): largest single contiguous block; the one that matters for
+  //                    TLS handshakes (~10-40 KB needed). When this drops low,
+  //                    TLS fetches fail even though getFreeHeap() looks healthy.
+  // getMinFreeHeap() : all-time low-water mark of getFreeHeap() since boot
+  //                    (ESP-IDF statistic, survives across poll cycles).
+  {
+    const uint32_t free_now   = static_cast<uint32_t>(ESP.getFreeHeap());
+    const uint32_t max_block  = static_cast<uint32_t>(ESP.getMaxAllocHeap());
+    const uint32_t min_ever   = static_cast<uint32_t>(ESP.getMinFreeHeap());
+    const uint32_t uptime_s   = millis() / 1000;
+    const uint32_t uptime_h   = uptime_s / 3600;
+    const uint32_t uptime_min = (uptime_s % 3600) / 60;
+    char heap_buf[128];
+    snprintf(heap_buf, sizeof(heap_buf),
+             "Heap: %u B free now, %u B largest block, %u B min ever",
+             free_now, max_block, min_ever);
+    char uptime_buf[32];
+    snprintf(uptime_buf, sizeof(uptime_buf), "%uh %02um", uptime_h, uptime_min);
+    html += "<p class=hint>";
+    html += heap_buf;
+    html += " &middot; uptime: ";
+    html += uptime_buf;
+    html += "</p>";
+  }
+
   if (message.length() > 0) {
     html += "<p class=";
     html += message_is_error ? "bad" : "ok";
