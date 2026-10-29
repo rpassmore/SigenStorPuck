@@ -6,7 +6,10 @@
 
 #include "board_config.h"
 #include "format.h"
+#include "tariff_view_helpers.h"
 #include "theme.h"
+#include "ui_common.h"
+#include "ui_metric_pill.h"
 
 namespace {
 constexpr lv_coord_t ROW_WIDTH = 250;
@@ -14,8 +17,7 @@ constexpr lv_coord_t ROW_WIDTH = 250;
 lv_obj_t* s_root = nullptr;
 lv_obj_t* s_title = nullptr;
 lv_obj_t* s_rate_imp_now = nullptr;
-lv_obj_t* s_pill = nullptr;
-lv_obj_t* s_rate_exp_now = nullptr;
+UiMetricPill s_pill;
 lv_obj_t* s_caption = nullptr;
 lv_obj_t* s_slots_box = nullptr;
 lv_obj_t* s_slot_when[SNAPSHOT_MAX_TARIFF_SLOTS] = {};
@@ -31,49 +33,6 @@ lv_chart_series_t* s_series_import = nullptr;
 lv_chart_series_t* s_series_export = nullptr;
 lv_chart_cursor_t* s_cursor = nullptr;
 
-
-lv_obj_t* make_label(lv_obj_t* parent, const lv_font_t* font, uint32_t colour, lv_coord_t x,
-                     lv_coord_t y) {
-  lv_obj_t* label = lv_label_create(parent);
-  lv_obj_set_style_text_font(label, font, LV_PART_MAIN);
-  lv_obj_set_style_text_color(label, lv_color_hex(colour), LV_PART_MAIN);
-  lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-  lv_obj_align(label, LV_ALIGN_CENTER, x, y);
-  return label;
-}
-
-lv_obj_t* make_label(lv_obj_t* parent, const lv_font_t* font, uint32_t colour) {
-  lv_obj_t* label = lv_label_create(parent);
-  lv_obj_set_style_text_font(label, font, LV_PART_MAIN);
-  lv_obj_set_style_text_color(label, lv_color_hex(colour), LV_PART_MAIN);
-  return label;
-}
-
-lv_obj_t* make_group(lv_obj_t* parent) {
-  lv_obj_t* group = lv_obj_create(parent);
-  lv_obj_remove_style_all(group);
-  lv_obj_clear_flag(group, LV_OBJ_FLAG_SCROLLABLE);
-  return group;
-}
-
-
-// Cheap or dear relative to what you are paying right now, not to a threshold
-// somebody has to configure. "Cheaper than now" is the question you actually ask
-// when deciding whether to wait before running something.
-uint32_t colour_for_price(float pence, const MaybeFloat& rate_now) {
-  if (!rate_now.known) {
-    return PUCK_COLOUR_TEXT;
-  }
-  // A hair either side of the current rate is the same rate, not a change.
-  const float margin = 0.2f;
-  if (pence < rate_now.value - margin) {
-    return PUCK_COLOUR_BATTERY;  // green: cheaper than now
-  }
-  if (pence > rate_now.value + margin) {
-    return PUCK_COLOUR_WARN;  // amber: dearer than now
-  }
-  return PUCK_COLOUR_MUTED;
-}
 
 // Chart area drawing call back
 static void chart_draw_event_cb(lv_event_t * e)
@@ -135,11 +94,7 @@ static void chart_draw_event_cb(lv_event_t * e)
 }  // namespace
 
 lv_obj_t* screen_rates_create(lv_obj_t* parent) {
-  s_root = make_group(parent);
-  lv_obj_set_size(s_root, PUCK_LCD_WIDTH, PUCK_LCD_HEIGHT);
-  lv_obj_set_style_bg_color(s_root, lv_color_hex(PUCK_COLOUR_BG), LV_PART_MAIN);
-  lv_obj_set_style_bg_opa(s_root, LV_OPA_COVER, LV_PART_MAIN);
-
+  s_root = puck_create_screen_root(parent);
 
   // Chart Component
   s_chart = lv_chart_create(s_root);
@@ -177,72 +132,48 @@ lv_obj_t* screen_rates_create(lv_obj_t* parent) {
 
 
   // Title
-  s_title = make_label(s_root, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED);
+  s_title = puck_create_label(s_root, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED, 0, -170);
   lv_label_set_text(s_title, "TARIFF RATES");
-  lv_obj_align(s_title, LV_ALIGN_CENTER, 0, -170);
-
 
   // Import tariff rate
-  s_rate_imp_now = make_label(s_root, PUCK_FONT_HERO, PUCK_COLOUR_IMPORT, 0, -124);
+  s_rate_imp_now = puck_create_label(s_root, PUCK_FONT_HERO, PUCK_COLOUR_IMPORT, 0, -124);
   lv_label_set_text(s_rate_imp_now, "--");
 
-  // The export tariff rate, in the same pill screen 2 uses for the same job.
-  s_pill = lv_obj_create(s_root);
-  lv_obj_remove_style_all(s_pill);
-  lv_obj_clear_flag(s_pill, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_clear_flag(s_pill, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_set_size(s_pill, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-  lv_obj_set_style_radius(s_pill, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-  lv_obj_set_style_pad_hor(s_pill, 18, LV_PART_MAIN);
-  lv_obj_set_style_pad_ver(s_pill, 7, LV_PART_MAIN);
-  lv_obj_set_style_bg_color(s_pill, lv_color_hex(PUCK_COLOUR_EXPORT), LV_PART_MAIN);
-  lv_obj_set_style_bg_opa(s_pill, LV_OPA_20, LV_PART_MAIN);
-  lv_obj_align(s_pill, LV_ALIGN_CENTER, 0, -64);
+  // The export tariff rate pill
+  s_pill.create(s_root, PUCK_COLOUR_EXPORT, -64);
 
-  s_rate_exp_now = lv_label_create(s_pill);
-  lv_obj_set_style_text_font(s_rate_exp_now, PUCK_FONT_LARGE, LV_PART_MAIN);
-  lv_obj_set_style_text_color(s_rate_exp_now, lv_color_hex(PUCK_COLOUR_EXPORT), LV_PART_MAIN);
-  lv_label_set_text(s_rate_exp_now, "--");
-  lv_obj_center(s_rate_exp_now);
-
-  s_caption = make_label(s_root, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED, 0, -26);
+  s_caption = puck_create_label(s_root, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED, 0, -26);
   lv_label_set_text(s_caption, "now");
 
-  s_slots_box = make_group(s_root);
-  lv_obj_set_size(s_slots_box, ROW_WIDTH, LV_SIZE_CONTENT);
-  lv_obj_set_flex_flow(s_slots_box, LV_FLEX_FLOW_COLUMN);
-  lv_obj_set_style_pad_row(s_slots_box, 6, LV_PART_MAIN);
-  lv_obj_align(s_slots_box, LV_ALIGN_CENTER, 0, 50);
+  s_slots_box = puck_create_tariff_slots_box(s_root, 50);
 
   for (size_t i = 0; i < SNAPSHOT_MAX_TARIFF_SLOTS; ++i) {
-    lv_obj_t* row = make_group(s_slots_box);
+    lv_obj_t* row = puck_create_group(s_slots_box);
     lv_obj_set_size(row, ROW_WIDTH, LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
     s_slot_rows[i] = row;
 
-    s_slot_when[i] = make_label(row, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED);
+    s_slot_when[i] = puck_create_label(row, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED, 0, 0, LV_ALIGN_DEFAULT);
     lv_obj_set_width(s_slot_when[i], 70);
     lv_obj_set_style_text_align(s_slot_when[i], LV_TEXT_ALIGN_LEFT, LV_PART_MAIN);
     lv_label_set_text(s_slot_when[i], "");
 
-    s_slot_price_imp[i] = make_label(row, PUCK_FONT_BODY, PUCK_COLOUR_TEXT);
+    s_slot_price_imp[i] = puck_create_label(row, PUCK_FONT_BODY, PUCK_COLOUR_TEXT, 0, 0, LV_ALIGN_DEFAULT);
     lv_obj_set_width(s_slot_price_imp[i], 90);
     lv_obj_set_style_text_align(s_slot_price_imp[i], LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
     lv_label_set_text(s_slot_price_imp[i], "");
 
-    s_slot_price_exp[i] = make_label(row, PUCK_FONT_BODY, PUCK_COLOUR_EXPORT);
+    s_slot_price_exp[i] = puck_create_label(row, PUCK_FONT_BODY, PUCK_COLOUR_EXPORT, 0, 0, LV_ALIGN_DEFAULT);
     lv_obj_set_width(s_slot_price_exp[i], 90);
     lv_obj_set_style_text_align(s_slot_price_exp[i], LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
     lv_label_set_text(s_slot_price_exp[i], "");
   }
 
-  s_unconfigured = make_label(s_root, PUCK_FONT_BODY, PUCK_COLOUR_MUTED);
+  s_unconfigured = puck_create_label(s_root, PUCK_FONT_BODY, PUCK_COLOUR_MUTED, 0, 0);
   lv_label_set_text(s_unconfigured, "no tariff set");
-  lv_obj_set_style_text_align(s_unconfigured, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-  lv_obj_align(s_unconfigured, LV_ALIGN_CENTER, 0, 0);
-  lv_obj_add_flag(s_unconfigured, LV_OBJ_FLAG_HIDDEN);
+  puck_set_visible(s_unconfigured, false);
 
   return s_root;
 }
@@ -257,17 +188,17 @@ void screen_rates_update(const Snapshot& snapshot) {
 
   if (!configured) {
     lv_label_set_text(s_rate_imp_now, "Not configured");
-    lv_label_set_text(s_rate_exp_now, "Not configured");
-    lv_obj_add_flag(s_slots_box, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(s_unconfigured, LV_OBJ_FLAG_HIDDEN);
+    s_pill.set_text("Not configured");
+    puck_set_visible(s_slots_box, false);
+    puck_set_visible(s_unconfigured, true);
     lv_label_set_text(s_unconfigured, snapshot.valid ? "no tariff set" : "offline");
     
-    lv_obj_add_flag(s_chart, LV_OBJ_FLAG_HIDDEN);
+    puck_set_visible(s_chart, false);
     return;
   }
-  lv_obj_clear_flag(s_slots_box, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_clear_flag(s_chart, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_add_flag(s_unconfigured, LV_OBJ_FLAG_HIDDEN);
+  puck_set_visible(s_slots_box, true);
+  puck_set_visible(s_chart, true);
+  puck_set_visible(s_unconfigured, false);
 
   // Position vertical line cursor at active slot index based on UTC timestamp
   const time_t now = time(nullptr);
@@ -338,9 +269,9 @@ void screen_rates_update(const Snapshot& snapshot) {
     rate_exp_now.value = rates.export_slots[slot_idx].pence;
     puck_format_magnitude(rate_exp_now, 1, scratch, sizeof(scratch));
     snprintf(text, sizeof(text), "Sell %sp kWh", scratch);
-    lv_label_set_text(s_rate_exp_now, text);
+    s_pill.set_text(text);
   } else {
-    lv_label_set_text(s_rate_exp_now, rates.export_valid ? "Export rate unknown" : "--");
+    s_pill.set_text(rates.export_valid ? "Export rate unknown" : "--");
   }
 
   const int32_t seconds_since_midnight =
@@ -366,12 +297,10 @@ void screen_rates_update(const Snapshot& snapshot) {
       }
     }
 
+    puck_set_visible(s_slot_rows[i], has_slot);
     if (!has_slot) {
-      lv_obj_add_flag(s_slot_rows[i], LV_OBJ_FLAG_HIDDEN);
       continue;
     }
-
-    lv_obj_clear_flag(s_slot_rows[i], LV_OBJ_FLAG_HIDDEN);
 
     puck_format_offset(ahead, scratch, sizeof(scratch));
     lv_label_set_text(s_slot_when[i], scratch);
@@ -382,7 +311,7 @@ void screen_rates_update(const Snapshot& snapshot) {
       lv_label_set_text(s_slot_price_imp[i], text);
       lv_obj_set_style_text_color(
           s_slot_price_imp[i],
-          lv_color_hex(colour_for_price(slot_imp_pence, rate_imp_now)),
+          lv_color_hex(puck_colour_for_price(slot_imp_pence, rate_imp_now)),
           LV_PART_MAIN);
     } else {
       lv_label_set_text(s_slot_price_imp[i], "--");

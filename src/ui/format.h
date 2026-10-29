@@ -27,3 +27,9 @@ void puck_format_duration(const MaybeInt& minutes, char* out, size_t size);
 // up (PLAN.md §B3) — a wrong time presented confidently is worse than a right
 // offset. See screen_cost.cpp for the longer-term fix.
 void puck_format_offset(int32_t seconds_ahead, char* out, size_t size);
+
+// "3.4 kWh", or "--" when unknown.
+void puck_format_kwh(const MaybeFloat& value, int decimals, char* out, size_t size);
+
+// "3.4 kW", or "--" when unknown.
+void puck_format_kw(const MaybeFloat& value, int decimals, char* out, size_t size);

@@ -10,94 +10,31 @@
 #include "psram_alloc.h"
 #include "solar_metric_layout.h"
 #include "theme.h"
+#include "ui_bezel_ring.h"
+#include "ui_common.h"
+#include "ui_metric_pill.h"
+#include "ui_stat_grid.h"
 
 namespace {
 
-// ------------------------------------------------------------------ layout ---
-//
-// Built to the same three layers as screen 2, because they are the same kind of
-// screen: a quantity that fills up over a day, its live rate, and the figures
-// you check rather than watch.
-//
-//   1. The ring at the bezel — today's generation as a fraction of today's
-//      forecast. The direct analogue of state of charge: how full is today.
-//   2. The day's PV curve, ghosted right back across the lower half.
-//   3. The readings on top.
-//
-// The ring is the one part that has nothing to show without a forecast, so it is
-// hidden rather than drawn empty when the selected source has no forecast — an
-// unfilled track reads as a confident zero.
-
-// Full width and clipped to the bezel, for the reasons set out on screen 2: a
-// rectangle either lies across the ring at its corners or ends in open screen.
-constexpr lv_coord_t BAND_WIDTH = PUCK_LCD_WIDTH;
-constexpr lv_coord_t BAND_HEIGHT = 156;
-constexpr lv_coord_t BAND_Y = 90;  // centre, so the band spans +12 to +168
-
-constexpr lv_coord_t BAND_CLIP_RADIUS = PUCK_RING_DIAMETER / 2 - PUCK_RING_WIDTH - 4;
-
-constexpr lv_opa_t BAND_GHOST = 110;
-
-// The forecast curve sits behind the actual, fainter still, so the still-to-come
-// half shows through where the actual has nothing yet. The same ratio to the
-// actual as the landscape screen keeps between its two bands.
-constexpr lv_opa_t FORECAST_GHOST = 46;
-
-// Wider than screen 2's: PV under broken cloud reduces to a picket fence, and
-// behind four figures that is noise rather than information. The day's shape is
-// what this is here to carry.
+// Smoothing for solar band is wider (13) to smooth out broken cloud picket fence.
 constexpr uint8_t BAND_SMOOTHING = 13;
-
-constexpr lv_coord_t COLUMN_X = 88;
-constexpr lv_coord_t ROW_ONE_LABEL_Y = 44;
-constexpr lv_coord_t ROW_ONE_VALUE_Y = 70;
-constexpr lv_coord_t ROW_TWO_LABEL_Y = 116;
-constexpr lv_coord_t ROW_TWO_VALUE_Y = 142;
-
 // 288 columns for the forecast band, allocated in PSRAM by screen_solar_create().
 HistoryColumn* s_forecast_cols = nullptr;
 
 lv_obj_t* s_root = nullptr;
 lv_obj_t* s_forecast_band = nullptr;
 lv_obj_t* s_band = nullptr;
-lv_obj_t* s_arc = nullptr;
-lv_obj_t* s_generated = nullptr;
-lv_obj_t* s_caption = nullptr;
-lv_obj_t* s_pill = nullptr;
-lv_obj_t* s_rate = nullptr;
-lv_obj_t* s_forecast_caption = nullptr;
-lv_obj_t* s_forecast = nullptr;
-lv_obj_t* s_remaining_caption = nullptr;
-lv_obj_t* s_remaining = nullptr;
-lv_obj_t* s_versus_caption = nullptr;
-lv_obj_t* s_versus = nullptr;
-lv_obj_t* s_peak_caption = nullptr;
-lv_obj_t* s_peak = nullptr;
+UiBezelRing s_arc;
+UiScreenHeader s_header;
+UiMetricPill s_pill;
+UiStatGrid2x2 s_stats;
 bool s_live = true;
 SolarOptionalMetricSlots s_slots;
 
-lv_obj_t* make_label(lv_obj_t* parent, const lv_font_t* font, uint32_t colour, lv_coord_t x,
-                     lv_coord_t y) {
-  lv_obj_t* label = lv_label_create(parent);
-  lv_obj_set_style_text_font(label, font, LV_PART_MAIN);
-  lv_obj_set_style_text_color(label, lv_color_hex(colour), LV_PART_MAIN);
-  lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-  lv_obj_align(label, LV_ALIGN_CENTER, x, y);
-  return label;
-}
-
-lv_obj_t* make_caption(lv_obj_t* parent, const char* text, lv_coord_t x, lv_coord_t y) {
-  lv_obj_t* label = make_label(parent, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED, x, y);
-  lv_obj_set_style_text_letter_space(label, 2, LV_PART_MAIN);
-  lv_label_set_text(label, text);
-  return label;
-}
-
-// One of the forecast figures. All four share the selected forecast source's
-// configured state, while each individual value may still be unknown.
 void set_forecast_figure(lv_obj_t* label, const Snapshot& snapshot, const MaybeFloat& value,
                          int decimals, const char* unit) {
-  if (!snapshot.valid || !snapshot.solar.configured) {
+  if (!snapshot.valid || !snapshot.solar.configured || !value.known) {
     lv_label_set_text(label, "--");
     return;
   }
@@ -130,114 +67,32 @@ void position_optional_figure(lv_obj_t* caption, lv_obj_t* value, int8_t slot) {
 
 }  // namespace
 
-lv_obj_t* screen_solar_create(lv_obj_t* parent, uint8_t figures) {
-  s_root = lv_obj_create(parent);
-  lv_obj_remove_style_all(s_root);
-  lv_obj_set_size(s_root, PUCK_LCD_WIDTH, PUCK_LCD_HEIGHT);
-  lv_obj_set_style_bg_color(s_root, lv_color_hex(PUCK_COLOUR_BG), LV_PART_MAIN);
-  lv_obj_set_style_bg_opa(s_root, LV_OPA_COVER, LV_PART_MAIN);
-  lv_obj_clear_flag(s_root, LV_OBJ_FLAG_SCROLLABLE);
+lv_obj_t* screen_solar_create(lv_obj_t* parent) {
+  s_root = puck_create_screen_root(parent);
 
-  // Same ring geometry as screens 1 and 2, from theme.h.
-  s_arc = lv_arc_create(s_root);
-  lv_obj_set_size(s_arc, PUCK_RING_DIAMETER, PUCK_RING_DIAMETER);
-  lv_obj_center(s_arc);
-  lv_arc_set_rotation(s_arc, 270);  // zero at the top
-  lv_arc_set_bg_angles(s_arc, 0, 360);
-  lv_arc_set_range(s_arc, 0, 100);
-  lv_arc_set_value(s_arc, 0);
-  lv_obj_remove_style(s_arc, nullptr, LV_PART_KNOB);
-  lv_obj_clear_flag(s_arc, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_set_style_arc_width(s_arc, PUCK_RING_WIDTH, LV_PART_MAIN);
-  lv_obj_set_style_arc_width(s_arc, PUCK_RING_WIDTH, LV_PART_INDICATOR);
-  lv_obj_set_style_arc_color(s_arc, lv_color_hex(PUCK_COLOUR_TRACK), LV_PART_MAIN);
-  lv_obj_set_style_arc_color(s_arc, lv_color_hex(PUCK_COLOUR_SOLAR), LV_PART_INDICATOR);
-  lv_obj_add_flag(s_arc, LV_OBJ_FLAG_HIDDEN);
+  s_arc.create(s_root, PUCK_COLOUR_SOLAR, /*hidden=*/true);
 
   // Created before the actual band so it draws behind it. Fed from forecast_store
   // (the whole day, future included), not the history ring — see forecast_store.h.
   // Same geometry and bezel clip as the actual, just fainter.
   s_forecast_cols = static_cast<HistoryColumn*>(psram_alloc(288 * sizeof(HistoryColumn)));
-  s_forecast_band = chart_band_create(s_root, HistorySeries::Pv, PUCK_COLOUR_SOLAR);
+  s_forecast_band = chart_band_create_standard(s_root, HistorySeries::Pv, PUCK_COLOUR_SOLAR, 0.0f, 0.0f);
   if (s_forecast_band != nullptr) {
-    lv_obj_set_size(s_forecast_band, BAND_WIDTH, BAND_HEIGHT);
-    lv_obj_align(s_forecast_band, LV_ALIGN_CENTER, 0, BAND_Y);
     chart_band_set_intensity(s_forecast_band, FORECAST_GHOST);
-    chart_band_set_bezel_clip(s_forecast_band, BAND_CLIP_RADIUS);
     chart_band_set_smoothing(s_forecast_band, BAND_SMOOTHING);
   }
 
-  s_band = chart_band_create(s_root, HistorySeries::Pv, PUCK_COLOUR_SOLAR);
+  // Autoscaled PV curve
+  s_band = chart_band_create_standard(s_root, HistorySeries::Pv, PUCK_COLOUR_SOLAR, 0.0f, 0.0f);
   if (s_band != nullptr) {
-    lv_obj_set_size(s_band, BAND_WIDTH, BAND_HEIGHT);
-    lv_obj_align(s_band, LV_ALIGN_CENTER, 0, BAND_Y);
-    // Autoscaled, unlike screen 2's. There is no ceiling a PV curve is a
-    // fraction of — an array's output is bounded by the weather, not by a rated
-    // capacity — so the band scales to the day it is drawing.
-    chart_band_set_range(s_band, 0.0f, 0.0f);
-    chart_band_set_intensity(s_band, BAND_GHOST);
-    chart_band_set_bezel_clip(s_band, BAND_CLIP_RADIUS);
     chart_band_set_smoothing(s_band, BAND_SMOOTHING);
   }
 
-  lv_obj_t* title = make_label(s_root, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED, 0, -166);
-  lv_obj_set_style_text_letter_space(title, 3, LV_PART_MAIN);
-  lv_label_set_text(title, "SOLAR");
+  s_header.create(s_root, "SOLAR", "generated", PUCK_COLOUR_TEXT, -166);
 
-  s_generated = make_label(s_root, PUCK_FONT_HERO, PUCK_COLOUR_TEXT, 0, -114);
-  lv_label_set_text(s_generated, "--");
+  s_pill.create(s_root, PUCK_COLOUR_SOLAR, -26);
 
-  s_caption = make_label(s_root, PUCK_FONT_SMALL, PUCK_COLOUR_MUTED, 0, -70);
-  lv_label_set_text(s_caption, "generated");
-
-  // The live rate, in the same pill screen 2 uses for the same job.
-  s_pill = lv_obj_create(s_root);
-  lv_obj_remove_style_all(s_pill);
-  lv_obj_clear_flag(s_pill, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_clear_flag(s_pill, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_set_size(s_pill, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-  lv_obj_set_style_radius(s_pill, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-  lv_obj_set_style_pad_hor(s_pill, 18, LV_PART_MAIN);
-  lv_obj_set_style_pad_ver(s_pill, 7, LV_PART_MAIN);
-  lv_obj_set_style_bg_color(s_pill, lv_color_hex(PUCK_COLOUR_SOLAR), LV_PART_MAIN);
-  lv_obj_set_style_bg_opa(s_pill, LV_OPA_20, LV_PART_MAIN);
-  lv_obj_align(s_pill, LV_ALIGN_CENTER, 0, -26);
-
-  s_rate = lv_label_create(s_pill);
-  lv_obj_set_style_text_font(s_rate, PUCK_FONT_LARGE, LV_PART_MAIN);
-  lv_obj_set_style_text_color(s_rate, lv_color_hex(PUCK_COLOUR_SOLAR), LV_PART_MAIN);
-  lv_label_set_text(s_rate, "--");
-  lv_obj_center(s_rate);
-
-  s_forecast_caption = make_caption(s_root, "FORECAST", -COLUMN_X, ROW_ONE_LABEL_Y);
-  s_forecast = make_label(s_root, PUCK_FONT_BODY, PUCK_COLOUR_TEXT, -COLUMN_X, ROW_ONE_VALUE_Y);
-  lv_label_set_text(s_forecast, "--");
-
-  s_remaining_caption = make_caption(s_root, "REMAINING", COLUMN_X, ROW_ONE_LABEL_Y);
-  s_remaining = make_label(s_root, PUCK_FONT_BODY, PUCK_COLOUR_TEXT, COLUMN_X, ROW_ONE_VALUE_Y);
-  lv_label_set_text(s_remaining, "--");
-  lv_obj_add_flag(s_remaining_caption, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_add_flag(s_remaining, LV_OBJ_FLAG_HIDDEN);
-
-  s_versus_caption = make_caption(s_root, "VS FORECAST", -COLUMN_X, ROW_TWO_LABEL_Y);
-  s_versus = make_label(s_root, PUCK_FONT_BODY, PUCK_COLOUR_TEXT, -COLUMN_X, ROW_TWO_VALUE_Y);
-  lv_label_set_text(s_versus, "--");
-  lv_obj_add_flag(s_versus_caption, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_add_flag(s_versus, LV_OBJ_FLAG_HIDDEN);
-
-  s_peak_caption = make_caption(s_root, "PEAK", COLUMN_X, ROW_TWO_LABEL_Y);
-  s_peak = make_label(s_root, PUCK_FONT_BODY, PUCK_COLOUR_TEXT, COLUMN_X, ROW_TWO_VALUE_Y);
-  lv_label_set_text(s_peak, "--");
-  lv_obj_add_flag(s_peak_caption, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_add_flag(s_peak, LV_OBJ_FLAG_HIDDEN);
-
-  // Placed once, from what the source can supply, and never moved: see
-  // solar_metric_layout.h for why a figure that is only not known yet keeps its
-  // place and shows "--".
-  s_slots = solar_optional_metric_slots(figures);
-  position_optional_figure(s_remaining_caption, s_remaining, s_slots.remaining);
-  position_optional_figure(s_versus_caption, s_versus, s_slots.vs_forecast);
-  position_optional_figure(s_peak_caption, s_peak, s_slots.peak);
+  s_stats.create(s_root, "FORECAST", "REMAINING", "VS FORECAST", "PEAK");
 
   return s_root;
 }
@@ -281,15 +136,13 @@ void screen_solar_update(const Snapshot& snapshot) {
   const bool have_today = snapshot.valid && snapshot.today.present;
   const MaybeFloat generated = have_today ? snapshot.today.solar : MaybeFloat{};
   if (generated.known) {
-    snprintf(text, sizeof(text), "%.1f kWh", generated.value);
-    lv_label_set_text(s_generated, text);
+    puck_format_kwh(generated, 1, text, sizeof(text));
+    s_header.set_hero(text);
   } else {
-    lv_label_set_text(s_generated, "--");
+    s_header.set_hero("--");
   }
 
-  // The ring: how much of today's forecast has been generated. Hidden outright
-  // without a forecast, because an empty track is indistinguishable from a real
-  // zero and this screen exists on a source that will never have one.
+  // The ring: how much of today's forecast has been generated.
   const MaybeFloat forecast =
       snapshot.valid && snapshot.solar.configured ? snapshot.solar.forecast_kwh : MaybeFloat{};
   if (generated.known && forecast.known && forecast.value > 0.0f) {
@@ -297,41 +150,31 @@ void screen_solar_update(const Snapshot& snapshot) {
     if (pct < 0.0f) {
       pct = 0.0f;
     }
-    // A day that beats its forecast fills the ring and stops. The overshoot is
-    // still readable as "vs forecast" over 100 %.
     if (pct > 100.0f) {
       pct = 100.0f;
     }
-    lv_arc_set_value(s_arc, static_cast<int16_t>(pct));
-    lv_obj_clear_flag(s_arc, LV_OBJ_FLAG_HIDDEN);
+    s_arc.set_value(static_cast<int16_t>(pct));
+    s_arc.set_visible(true);
   } else {
-    lv_obj_add_flag(s_arc, LV_OBJ_FLAG_HIDDEN);
+    s_arc.set_visible(false);
   }
 
-  // The pill is live-only, so a past day simply does not have one.
-  if (s_live) {
-    lv_obj_clear_flag(s_pill, LV_OBJ_FLAG_HIDDEN);
-  } else {
-    lv_obj_add_flag(s_pill, LV_OBJ_FLAG_HIDDEN);
-  }
+  // The pill is live-only.
+  s_pill.set_visible(s_live);
 
   // Live PV, in the pill.
   const MaybeFloat pv = snapshot.valid ? snapshot.power.pv : MaybeFloat{};
   const bool generating = pv.known && pv.value > 0.0f;
   if (!pv.known) {
-    lv_label_set_text(s_rate, "-- kW");
+    s_pill.set_text("-- kW");
   } else if (!generating) {
-    // The same word a resting leg gets on screen 1.
-    lv_label_set_text(s_rate, "idle");
+    s_pill.set_text("idle");
   } else {
     puck_format_magnitude(pv, PUCK_KW_DECIMALS, scratch, sizeof(scratch));
     snprintf(text, sizeof(text), "%s kW generating", scratch);
-    lv_label_set_text(s_rate, text);
+    s_pill.set_text(text);
   }
-  const uint32_t pill_colour = generating ? PUCK_COLOUR_SOLAR : PUCK_COLOUR_MUTED;
-  lv_obj_set_style_text_color(s_rate, lv_color_hex(pill_colour), LV_PART_MAIN);
-  lv_obj_set_style_bg_color(s_pill, lv_color_hex(pill_colour), LV_PART_MAIN);
-  lv_obj_set_style_bg_opa(s_pill, generating ? LV_OPA_20 : LV_OPA_10, LV_PART_MAIN);
+  s_pill.set_active(generating);
 
   set_forecast_figure(s_forecast, snapshot, snapshot.solar.forecast_kwh, 1, " kWh");
   if (s_slots.remaining != SolarOptionalMetricSlots::Hidden) {

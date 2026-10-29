@@ -88,3 +88,9 @@ void chart_band_set_smoothing(lv_obj_t* band, uint8_t columns);
 // and the area invalidated twelve times for a shift of a fifth of a pixel, and
 // on an AMOLED driven by a 40-line partial buffer that is real work for nothing.
 void chart_band_refresh(lv_obj_t* band);
+
+// Creates and sets up the standard background chart band used by the telemetry screens
+// (battery, solar, load): LCD width, height 148, centered at y=92, intensity 110,
+// bezel-clipped and smoothing 7.
+lv_obj_t* chart_band_create_standard(lv_obj_t* parent, HistorySeries series, uint32_t colour,
+                                     float min_value = 0.0f, float max_value = 0.0f);

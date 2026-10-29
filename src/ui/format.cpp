@@ -54,3 +54,23 @@ void puck_format_offset(int32_t seconds_ahead, char* out, size_t size) {
     snprintf(out, size, "in %dh %02dm", hours, rest);
   }
 }
+
+void puck_format_kwh(const MaybeFloat& value, int decimals, char* out, size_t size) {
+  if (!value.known) {
+    snprintf(out, size, "--");
+    return;
+  }
+  char scratch[16];
+  puck_format_magnitude(value, decimals, scratch, sizeof(scratch));
+  snprintf(out, size, "%s kWh", scratch);
+}
+
+void puck_format_kw(const MaybeFloat& value, int decimals, char* out, size_t size) {
+  if (!value.known) {
+    snprintf(out, size, "--");
+    return;
+  }
+  char scratch[16];
+  puck_format_magnitude(value, decimals, scratch, sizeof(scratch));
+  snprintf(out, size, "%s kW", scratch);
+}
