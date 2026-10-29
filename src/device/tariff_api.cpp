@@ -46,19 +46,10 @@ FetchResult fetch_products() {
     return FetchResult::ClockUnset;
   }
 
-  WiFiClientSecure tls;
-  tls.setCACertBundle(rootca_crt_bundle_start,
-                      static_cast<size_t>(rootca_crt_bundle_end - rootca_crt_bundle_start));
-
-  HTTPClient http;
-  http.setConnectTimeout(CONNECT_TIMEOUT_MS);
-  http.setTimeout(TOTAL_TIMEOUT_MS);
-  http.setUserAgent(USER_AGENT);
-  http.setReuse(true);
-  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-
   std::vector<TariffProduct> new_imports;
   std::vector<TariffProduct> new_exports;
+  new_imports.reserve(50);
+  new_exports.reserve(50);
   std::set<String> seen_imports;
   std::set<String> seen_exports;
 
@@ -80,6 +71,17 @@ FetchResult fetch_products() {
 
     const String url = String(HOST) + "?available_at=" + time_str;
     
+    WiFiClientSecure tls;
+    tls.setCACertBundle(rootca_crt_bundle_start,
+                        static_cast<size_t>(rootca_crt_bundle_end - rootca_crt_bundle_start));
+
+    HTTPClient http;
+    http.setConnectTimeout(CONNECT_TIMEOUT_MS);
+    http.setTimeout(TOTAL_TIMEOUT_MS);
+    http.setUserAgent(USER_AGENT);
+    http.setReuse(false);
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+
     if (!http.begin(tls, url)) {
       last_error = FetchResult::TlsFailed;
       continue;
