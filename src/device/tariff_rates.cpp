@@ -1,125 +1,23 @@
 #include "tariff_rates.h"
 
 #include <ArduinoJson.h>
-#include <HTTPClient.h>
 #include <WiFi.h>
-#include <WiFiClientSecure.h>
-#include <esp_heap_caps.h>
 #include <time.h>
 
-#include "board_config.h"
+#include "http_psram.h"
+#include "net.h"
 #include "poller.h"
 #include "settings.h"
+#include "tariff_math.h"
 
 namespace {
 
 constexpr uint32_t RETRY_MS = 60 * 1000;  // 1 min retry on error
 constexpr uint16_t CONNECT_TIMEOUT_MS = 5000;
 constexpr uint16_t TOTAL_TIMEOUT_MS = 10000;
-constexpr int TARIFF_SLOT_COUNT = 48;
 constexpr int64_t HALF_HOUR_SECONDS = 30 * 60;
 constexpr uint16_t MAX_API_PAGES = 3;
 constexpr size_t PSRAM_HTTP_BUFFER_SIZE = 64 * 1024;
-
-constexpr const char* USER_AGENT = "SigenStorPuck/" PUCK_FW_VERSION " (ESP32-S3)";
-
-extern "C" const uint8_t rootca_crt_bundle_start[] asm("_binary_x509_crt_bundle_start");
-extern "C" const uint8_t rootca_crt_bundle_end[] asm("_binary_x509_crt_bundle_end");
-
-// Custom ArduinoJson 7 allocator routing document allocations to PSRAM
-struct PsramAllocator : ArduinoJson::Allocator {
-  void* allocate(size_t size) override {
-    void* ptr = nullptr;
-    if (psramFound()) {
-      ptr = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    }
-    return ptr ? ptr : malloc(size);
-  }
-
-  void deallocate(void* ptr) override {
-    free(ptr);
-  }
-
-  void* reallocate(void* ptr, size_t new_size) override {
-    void* p = nullptr;
-    if (psramFound()) {
-      p = heap_caps_realloc(ptr, new_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    }
-    return p ? p : realloc(ptr, new_size);
-  }
-};
-
-// Stream sink that buffers HTTP responses directly into PSRAM without internal SRAM allocations.
-class PsramBufferStream : public Stream {
- public:
-  explicit PsramBufferStream(size_t capacity) {
-    if (psramFound()) {
-      _buffer = static_cast<char*>(heap_caps_malloc(capacity, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    }
-    if (!_buffer) {
-      _buffer = static_cast<char*>(malloc(capacity));
-    }
-    _capacity = _buffer ? capacity : 0;
-    if (_buffer) {
-      _buffer[0] = '\0';
-    }
-  }
-
-  ~PsramBufferStream() override {
-    if (_buffer) {
-      free(_buffer);
-    }
-  }
-
-  size_t write(uint8_t b) override {
-    if (!_buffer || _size + 1 >= _capacity) {
-      return 0;
-    }
-    _buffer[_size++] = static_cast<char>(b);
-    _buffer[_size] = '\0';
-    return 1;
-  }
-
-  size_t write(const uint8_t* buffer, size_t size) override {
-    if (!_buffer || size == 0) {
-      return 0;
-    }
-    if (_size + size >= _capacity) {
-      const size_t can_write = (_capacity > _size + 1) ? (_capacity - _size - 1) : 0;
-      if (can_write > 0) {
-        memcpy(_buffer + _size, buffer, can_write);
-        _size += can_write;
-        _buffer[_size] = '\0';
-      }
-      return can_write;
-    }
-    memcpy(_buffer + _size, buffer, size);
-    _size += size;
-    _buffer[_size] = '\0';
-    return size;
-  }
-
-  const char* c_str() const { return _buffer ? _buffer : ""; }
-  size_t length() const { return _size; }
-  bool isValid() const { return _buffer != nullptr; }
-
-  void clear() {
-    _size = 0;
-    if (_buffer) {
-      _buffer[0] = '\0';
-    }
-  }
-
-  int available() override { return 0; }
-  int read() override { return -1; }
-  int peek() override { return -1; }
-  void flush() override {}
-
- private:
-  char* _buffer = nullptr;
-  size_t _capacity = 0;
-  size_t _size = 0;
-};
 
 struct RateTargetState {
   char code[64] = {};
@@ -133,10 +31,6 @@ DayTariffRates s_rates;
 RateTargetState s_imp_state;
 RateTargetState s_exp_state;
 FetchResult s_last_result = FetchResult::NotConfigured;
-
-bool clock_is_plausible() {
-  return time(nullptr) > 1704067200;  // 1 Jan 2024
-}
 
 bool build_tariff_url(const char* product_code, time_t day_start, time_t day_end,
                       char* out_buf, size_t out_size) {
@@ -176,16 +70,8 @@ bool build_tariff_url(const char* product_code, time_t day_start, time_t day_end
   if (day_start > 0 && day_end > day_start) {
     char from_buf[32];
     char to_buf[32];
-    struct tm tm_from = {};
-    struct tm tm_to = {};
-    gmtime_r(&day_start, &tm_from);
-    gmtime_r(&day_end, &tm_to);
-    snprintf(from_buf, sizeof(from_buf), "%04d-%02d-%02dT%02d:%02d:%02dZ",
-             tm_from.tm_year + 1900, tm_from.tm_mon + 1, tm_from.tm_mday,
-             tm_from.tm_hour, tm_from.tm_min, tm_from.tm_sec);
-    snprintf(to_buf, sizeof(to_buf), "%04d-%02d-%02dT%02d:%02d:%02dZ",
-             tm_to.tm_year + 1900, tm_to.tm_mon + 1, tm_to.tm_mday,
-             tm_to.tm_hour, tm_to.tm_min, tm_to.tm_sec);
+    tariff_format_iso8601_utc(day_start, from_buf, sizeof(from_buf));
+    tariff_format_iso8601_utc(day_end, to_buf, sizeof(to_buf));
 
     const size_t cur_len = strlen(out_buf);
     if (cur_len < out_size) {
@@ -197,132 +83,14 @@ bool build_tariff_url(const char* product_code, time_t day_start, time_t day_end
   return true;
 }
 
-void clear_slots(RateSlot slots[TARIFF_SLOT_COUNT]) {
-  for (int i = 0; i < TARIFF_SLOT_COUNT; ++i) {
+void clear_slots(RateSlot slots[TARIFF_SLOTS_PER_DAY]) {
+  for (int i = 0; i < TARIFF_SLOTS_PER_DAY; ++i) {
     slots[i].valid = false;
     slots[i].pence = 0.0f;
   }
 }
 
-// Convert a Gregorian UTC date/time to Unix time without depending on the
-// device timezone. Octopus timestamps are returned as UTC (the trailing Z).
-int64_t days_from_civil(int year, unsigned month, unsigned day) {
-  year -= month <= 2;
-  const int era = (year >= 0 ? year : year - 399) / 400;
-  const unsigned yoe = static_cast<unsigned>(year - era * 400);
-  const unsigned doy = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
-  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-  return static_cast<int64_t>(era) * 146097 + static_cast<int64_t>(doe) - 719468;
-}
-
-bool parse_octopus_timestamp(const char* value, time_t* out) {
-  if (!value || !out) {
-    return false;
-  }
-
-  int year = 0;
-  int month = 0;
-  int day = 0;
-  int hour = 0;
-  int minute = 0;
-  int second = 0;
-
-  const int fields = sscanf(value, "%d-%d-%dT%d:%d:%d", &year, &month, &day,
-                            &hour, &minute, &second);
-  if (fields < 5) {
-    return false;
-  }
-
-  if (fields == 5) {
-    second = 0;
-  }
-
-  if (year < 1970 || month < 1 || month > 12 || day < 1 || day > 31 ||
-      hour < 0 || hour > 23 || minute < 0 || minute > 59 ||
-      second < 0 || second > 60) {
-    return false;
-  }
-
-  int64_t tz_offset_sec = 0;
-  const char* tz_ptr = strchr(value, 'Z');
-  if (!tz_ptr) {
-    const char* plus = strchr(value + 10, '+');
-    const char* minus = strchr(value + 10, '-');
-    const char* off_ptr = plus ? plus : minus;
-    if (off_ptr) {
-      int tz_h = 0;
-      int tz_m = 0;
-      if (sscanf(off_ptr + 1, "%d:%d", &tz_h, &tz_m) >= 1) {
-        tz_offset_sec = (tz_h * 3600LL + tz_m * 60LL) * (*off_ptr == '-' ? -1 : 1);
-      }
-    } else {
-      return false;
-    }
-  }
-
-  const int64_t days = days_from_civil(year, static_cast<unsigned>(month),
-                                      static_cast<unsigned>(day));
-  const int64_t seconds =
-      days * 86400LL + hour * 3600LL + minute * 60LL + second - tz_offset_sec;
-
-  *out = static_cast<time_t>(seconds);
-  return true;
-}
-
-bool get_utc_day_bounds(time_t now, time_t* day_start, time_t* day_end) {
-  if (!day_start || !day_end || now <= 0) {
-    return false;
-  }
-
-  struct tm tm_utc = {};
-  if (gmtime_r(&now, &tm_utc) == nullptr) {
-    return false;
-  }
-
-  const int32_t sec_since_midnight =
-      tm_utc.tm_hour * 3600 + tm_utc.tm_min * 60 + tm_utc.tm_sec;
-
-  const time_t start = now - sec_since_midnight;
-  const time_t end = start + 86400;
-
-  *day_start = start;
-  *day_end = end;
-  return true;
-}
-
-// Fill the fixed 48 local half-hour slots from an API interval.
-void apply_interval(RateSlot slots[TARIFF_SLOT_COUNT],
-                    time_t day_start,
-                    time_t day_end,
-                    time_t valid_from,
-                    time_t valid_to,
-                    float pence) {
-  if (valid_to <= valid_from || valid_to <= day_start || valid_from >= day_end) {
-    return;
-  }
-
-  const time_t clipped_from = valid_from > day_start ? valid_from : day_start;
-  const time_t clipped_to = valid_to < day_end ? valid_to : day_end;
-
-  if (clipped_to <= clipped_from) {
-    return;
-  }
-
-  // Find every half-hour slot which overlaps the API interval. This is
-  // intentionally based on overlap, rather than valid_from alone, so a
-  // three-hour COSY/FIX interval fills all six corresponding slots.
-  for (int slot = 0; slot < TARIFF_SLOT_COUNT; ++slot) {
-    const time_t slot_start = day_start + static_cast<time_t>(slot * HALF_HOUR_SECONDS);
-    const time_t slot_end = slot_start + static_cast<time_t>(HALF_HOUR_SECONDS);
-
-    if (valid_from < slot_end && valid_to > slot_start) {
-      slots[slot].pence = pence;
-      slots[slot].valid = true;
-    }
-  }
-}
-
-FetchResult fetch_rates_for_code(const String& product_code, RateSlot slots[TARIFF_SLOT_COUNT]) {
+FetchResult fetch_rates_for_code(const String& product_code, RateSlot slots[TARIFF_SLOTS_PER_DAY]) {
   if (product_code.isEmpty()) {
     return FetchResult::NotConfigured;
   }
@@ -331,7 +99,7 @@ FetchResult fetch_rates_for_code(const String& product_code, RateSlot slots[TARI
     return FetchResult::NoNetwork;
   }
 
-  if (!clock_is_plausible()) {
+  if (!net_time_synced()) {
     return FetchResult::ClockUnset;
   }
 
@@ -339,16 +107,12 @@ FetchResult fetch_rates_for_code(const String& product_code, RateSlot slots[TARI
 
   time_t day_start = 0;
   time_t day_end = 0;
-  if (!get_utc_day_bounds(now, &day_start, &day_end)) {
+  if (!tariff_get_utc_day_bounds(now, &day_start, &day_end)) {
     return FetchResult::BadPayload;
   }
 
-  RateSlot temp_slots[TARIFF_SLOT_COUNT];
+  RateSlot temp_slots[TARIFF_SLOTS_PER_DAY];
   clear_slots(temp_slots);
-
-  WiFiClientSecure tls;
-  tls.setCACertBundle(rootca_crt_bundle_start,
-                    static_cast<size_t>(rootca_crt_bundle_end - rootca_crt_bundle_start));
 
   char url[512] = {};
   if (!build_tariff_url(product_code.c_str(), day_start, day_end, url, sizeof(url))) {
@@ -364,40 +128,11 @@ FetchResult fetch_rates_for_code(const String& product_code, RateSlot slots[TARI
   bool saw_results = false;
 
   for (uint16_t page = 0; page < MAX_API_PAGES && url[0] != '\0'; ++page) {
-    // due to a bug in the underlying network libs need to reattach the certs
-    tls.setCACertBundle(rootca_crt_bundle_start,
-      static_cast<size_t>(rootca_crt_bundle_end - rootca_crt_bundle_start));
-
-    HTTPClient http;
-    http.setConnectTimeout(CONNECT_TIMEOUT_MS);
-    http.setTimeout(TOTAL_TIMEOUT_MS);
-    http.setUserAgent(USER_AGENT);
-    http.setReuse(false);
-    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-    http.addHeader("Accept", "application/json");
-
     Serial.printf("url %s\n", url);
-    if (!http.begin(tls, url)) {
-      return FetchResult::TlsFailed;
-    }
-
-    const int status = http.GET();
-    if (status <= 0) {
-      http.end();
-      return FetchResult::TlsFailed;
-    }
-
-    if (status != HTTP_CODE_OK) {
-      http.end();
-      return FetchResult::HttpError;
-    }
-
-    payload_buffer.clear();
-    const int written = http.writeToStream(&payload_buffer);
-    http.end();
-
-    if (written < 0 || payload_buffer.length() == 0) {
-      return FetchResult::BadPayload;
+    const FetchResult http_res = http_get_psram(url, payload_buffer,
+                                                CONNECT_TIMEOUT_MS, TOTAL_TIMEOUT_MS);
+    if (http_res != FetchResult::Ok) {
+      return http_res;
     }
 
     PsramAllocator json_allocator;
@@ -435,12 +170,12 @@ FetchResult fetch_rates_for_code(const String& product_code, RateSlot slots[TARI
       time_t valid_from = 0;
       time_t valid_to = 0;
 
-      if (!parse_octopus_timestamp(valid_from_str, &valid_from)) {
+      if (!tariff_parse_iso8601(valid_from_str, &valid_from)) {
         continue;
       }
 
       if (valid_to_str != nullptr) {
-        if (!parse_octopus_timestamp(valid_to_str, &valid_to)) {
+        if (!tariff_parse_iso8601(valid_to_str, &valid_to)) {
           continue;
         }
       } else {
@@ -455,8 +190,8 @@ FetchResult fetch_rates_for_code(const String& product_code, RateSlot slots[TARI
 
       const float pence = entry["value_inc_vat"] | 0.0f;
 
-      apply_interval(temp_slots, day_start, day_end,
-                     valid_from, valid_to, pence);
+      tariff_apply_interval(temp_slots, day_start, day_end,
+                            valid_from, valid_to, pence);
       ++loaded_count;
     }
 
@@ -477,7 +212,7 @@ FetchResult fetch_rates_for_code(const String& product_code, RateSlot slots[TARI
 
   // Verify that at least one of the 48 slots was populated. A valid API
   // response for a product can legitimately contain records for other dates.
-  for (int i = 0; i < TARIFF_SLOT_COUNT; ++i) {
+  for (int i = 0; i < TARIFF_SLOTS_PER_DAY; ++i) {
     if (temp_slots[i].valid) {
       memcpy(slots, temp_slots, sizeof(temp_slots));
       return FetchResult::Ok;
@@ -485,6 +220,75 @@ FetchResult fetch_rates_for_code(const String& product_code, RateSlot slots[TARI
   }
 
   return FetchResult::BadPayload;
+}
+
+// Drives periodic polling and change detection for a single tariff rate target (import or export).
+void service_rate_target(const String& code,
+                         RateTargetState& state,
+                         RateSlot slots[TARIFF_SLOTS_PER_DAY],
+                         bool& valid,
+                         uint32_t now_ms,
+                         time_t now,
+                         const struct tm& tm_now,
+                         uint16_t target_fetch_min,
+                         const char* target_name) {
+  if (code.isEmpty()) {
+    if (valid || state.code[0] != '\0') {
+      clear_slots(slots);
+      valid = false;
+      state = {};
+    }
+    return;
+  }
+
+  const uint16_t current_min = static_cast<uint16_t>(tm_now.tm_hour * 60 + tm_now.tm_min);
+  const bool code_changed = (strcmp(code.c_str(), state.code) != 0);
+  if (code_changed) {
+    strncpy(state.code, code.c_str(), sizeof(state.code) - 1);
+    state.code[sizeof(state.code) - 1] = '\0';
+    state.last_attempt_ms = 0;
+    state.last_result = FetchResult::NotConfigured;
+    state.last_fetch_day_of_year = -1;
+    state.last_fetch_min_of_day = -1;
+    valid = false;
+    clear_slots(slots);
+  }
+
+  const bool day_changed =
+      (state.last_fetch_day_of_year != -1 &&
+       tm_now.tm_yday != state.last_fetch_day_of_year);
+  if (day_changed) {
+    state.last_fetch_day_of_year = -1;
+    state.last_fetch_min_of_day = -1;
+    valid = false;
+    clear_slots(slots);
+  }
+
+  const bool fetch_due =
+      code_changed || day_changed || !valid ||
+      (current_min >= target_fetch_min &&
+       state.last_fetch_min_of_day < target_fetch_min);
+
+  const bool retrying_too_soon =
+      (state.last_result != FetchResult::Ok &&
+       state.last_attempt_ms != 0 &&
+       (now_ms - state.last_attempt_ms < RETRY_MS));
+
+  if (fetch_due && !retrying_too_soon) {
+    state.last_attempt_ms = now_ms;
+    state.last_result = fetch_rates_for_code(code, slots);
+    valid = (state.last_result == FetchResult::Ok);
+    if (valid) {
+      state.last_fetch_day_of_year = tm_now.tm_yday;
+      state.last_fetch_min_of_day = current_min;
+      s_rates.fetched_time = static_cast<uint32_t>(now);
+      Serial.printf("[tariff_rates] successfully loaded day rates for %s (%s)\n",
+                    target_name, code.c_str());
+    } else {
+      Serial.printf("[tariff_rates] %s rate fetch failed (%s): %s\n",
+                    target_name, code.c_str(), fetch_result_name(state.last_result));
+    }
+  }
 }
 
 }  // namespace
@@ -507,7 +311,7 @@ FetchResult tariff_rates_service() {
   if (WiFi.status() != WL_CONNECTED) {
     return FetchResult::NoNetwork;
   }
-  if (!clock_is_plausible()) {
+  if (!net_time_synced()) {
     return FetchResult::ClockUnset;
   }
 
@@ -516,129 +320,13 @@ FetchResult tariff_rates_service() {
   gmtime_r(&now, &tm_now);
 
   const uint32_t now_ms = millis();
-  const uint16_t current_min =
-      static_cast<uint16_t>(tm_now.tm_hour * 60 + tm_now.tm_min);
   const uint16_t target_fetch_min = settings.tariff_fetch_time_min;
 
-  // Process Import Tariff
-  if (imp_code.isEmpty()) {
-    if (s_rates.import_valid || s_imp_state.code[0] != '\0') {
-      clear_slots(s_rates.import_slots);
-      s_rates.import_valid = false;
-      s_imp_state = {};
-    }
-  } else {
-    const bool code_changed = (strcmp(imp_code.c_str(), s_imp_state.code) != 0);
-    if (code_changed) {
-      strncpy(s_imp_state.code, imp_code.c_str(), sizeof(s_imp_state.code) - 1);
-      s_imp_state.code[sizeof(s_imp_state.code) - 1] = '\0';
-      s_imp_state.last_attempt_ms = 0;
-      s_imp_state.last_result = FetchResult::NotConfigured;
-      s_imp_state.last_fetch_day_of_year = -1;
-      s_imp_state.last_fetch_min_of_day = -1;
-      s_rates.import_valid = false;
-      clear_slots(s_rates.import_slots);
-    }
-
-    const bool day_changed =
-        (s_imp_state.last_fetch_day_of_year != -1 &&
-         tm_now.tm_yday != s_imp_state.last_fetch_day_of_year);
-    if (day_changed) {
-      s_imp_state.last_fetch_day_of_year = -1;
-      s_imp_state.last_fetch_min_of_day = -1;
-      s_rates.import_valid = false;
-      clear_slots(s_rates.import_slots);
-    }
-
-    const bool fetch_due =
-        code_changed || day_changed || !s_rates.import_valid ||
-        (current_min >= target_fetch_min &&
-         s_imp_state.last_fetch_min_of_day < target_fetch_min);
-
-    const bool retrying_too_soon =
-        (s_imp_state.last_result != FetchResult::Ok &&
-         s_imp_state.last_attempt_ms != 0 &&
-         (now_ms - s_imp_state.last_attempt_ms < RETRY_MS));
-
-    if (fetch_due && !retrying_too_soon) {
-      s_imp_state.last_attempt_ms = now_ms;
-      s_imp_state.last_result =
-          fetch_rates_for_code(imp_code, s_rates.import_slots);
-      s_rates.import_valid = (s_imp_state.last_result == FetchResult::Ok);
-      if (s_rates.import_valid) {
-        s_imp_state.last_fetch_day_of_year = tm_now.tm_yday;
-        s_imp_state.last_fetch_min_of_day = current_min;
-        s_rates.fetched_time = static_cast<uint32_t>(now);
-        Serial.printf(
-            "[tariff_rates] successfully loaded day rates for import (%s)\n",
-            imp_code.c_str());
-      } else {
-        Serial.printf("[tariff_rates] import rate fetch failed (%s): %s\n",
-                      imp_code.c_str(),
-                      fetch_result_name(s_imp_state.last_result));
-      }
-    }
-  }
-
-  // Process Export Tariff
-  if (exp_code.isEmpty()) {
-    if (s_rates.export_valid || s_exp_state.code[0] != '\0') {
-      clear_slots(s_rates.export_slots);
-      s_rates.export_valid = false;
-      s_exp_state = {};
-    }
-  } else {
-    const bool code_changed = (strcmp(exp_code.c_str(), s_exp_state.code) != 0);
-    if (code_changed) {
-      strncpy(s_exp_state.code, exp_code.c_str(), sizeof(s_exp_state.code) - 1);
-      s_exp_state.code[sizeof(s_exp_state.code) - 1] = '\0';
-      s_exp_state.last_attempt_ms = 0;
-      s_exp_state.last_result = FetchResult::NotConfigured;
-      s_exp_state.last_fetch_day_of_year = -1;
-      s_exp_state.last_fetch_min_of_day = -1;
-      s_rates.export_valid = false;
-      clear_slots(s_rates.export_slots);
-    }
-
-    const bool day_changed =
-        (s_exp_state.last_fetch_day_of_year != -1 &&
-         tm_now.tm_yday != s_exp_state.last_fetch_day_of_year);
-    if (day_changed) {
-      s_exp_state.last_fetch_day_of_year = -1;
-      s_exp_state.last_fetch_min_of_day = -1;
-      s_rates.export_valid = false;
-      clear_slots(s_rates.export_slots);
-    }
-
-    const bool fetch_due =
-        code_changed || day_changed || !s_rates.export_valid ||
-        (current_min >= target_fetch_min &&
-         s_exp_state.last_fetch_min_of_day < target_fetch_min);
-
-    const bool retrying_too_soon =
-        (s_exp_state.last_result != FetchResult::Ok &&
-         s_exp_state.last_attempt_ms != 0 &&
-         (now_ms - s_exp_state.last_attempt_ms < RETRY_MS));
-
-    if (fetch_due && !retrying_too_soon) {
-      s_exp_state.last_attempt_ms = now_ms;
-      s_exp_state.last_result =
-          fetch_rates_for_code(exp_code, s_rates.export_slots);
-      s_rates.export_valid = (s_exp_state.last_result == FetchResult::Ok);
-      if (s_rates.export_valid) {
-        s_exp_state.last_fetch_day_of_year = tm_now.tm_yday;
-        s_exp_state.last_fetch_min_of_day = current_min;
-        s_rates.fetched_time = static_cast<uint32_t>(now);
-        Serial.printf(
-            "[tariff_rates] successfully loaded day rates for export (%s)\n",
-            exp_code.c_str());
-      } else {
-        Serial.printf("[tariff_rates] export rate fetch failed (%s): %s\n",
-                      exp_code.c_str(),
-                      fetch_result_name(s_exp_state.last_result));
-      }
-    }
-  }
+  // Process Import & Export Tariffs using common helper
+  service_rate_target(imp_code, s_imp_state, s_rates.import_slots, s_rates.import_valid,
+                      now_ms, now, tm_now, target_fetch_min, "import");
+  service_rate_target(exp_code, s_exp_state, s_rates.export_slots, s_rates.export_valid,
+                      now_ms, now, tm_now, target_fetch_min, "export");
 
   if (s_rates.import_valid || s_rates.export_valid) {
     s_last_result = FetchResult::Ok;
@@ -661,14 +349,14 @@ const DayTariffRates& tariff_rates_get() {
 
 uint8_t tariff_rates_get_current_slot() {
   const time_t now = time(nullptr);
-  if (!clock_is_plausible()) {
+  if (!net_time_synced()) {
     return 0;
   }
   time_t day_start = 0;
   time_t day_end = 0;
-  if (get_utc_day_bounds(now, &day_start, &day_end) && now >= day_start && now < day_end) {
+  if (tariff_get_utc_day_bounds(now, &day_start, &day_end) && now >= day_start && now < day_end) {
     const uint8_t slot = static_cast<uint8_t>((now - day_start) / HALF_HOUR_SECONDS);
-    return slot < TARIFF_SLOT_COUNT ? slot : TARIFF_SLOT_COUNT - 1;
+    return slot < TARIFF_SLOTS_PER_DAY ? slot : TARIFF_SLOTS_PER_DAY - 1;
   }
 
   return 0;

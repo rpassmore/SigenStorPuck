@@ -19,6 +19,7 @@
 #include "modbus_regs.h"
 #include "screen_window.h"
 #include "solar_forecast.h"
+#include "tariff_math.h"
 
 namespace {
 
@@ -681,6 +682,48 @@ void test_screen_window() {
   check(screen_local_minute(MIDNIGHT_UTC + 14 * 3600, 660) == 60, "wrapping forward past midnight");
 }
 
+void test_tariff_math() {
+  printf("tariff math\n");
+
+  // ISO 8601 formatting
+  char buf[32] = {};
+  check(tariff_format_iso8601_utc(1704067200, buf, sizeof(buf)), "format valid unix time");
+  check(strcmp(buf, "2024-01-01T00:00:00Z") == 0, "formatted string matches expected UTC");
+
+  // ISO 8601 parsing UTC
+  time_t parsed = 0;
+  check(tariff_parse_iso8601("2024-01-01T00:00:00Z", &parsed), "parse valid Z timestamp");
+  check(parsed == 1704067200, "parsed epoch matches 2024-01-01 00:00:00");
+
+  // ISO 8601 parsing with positive and negative timezone offset
+  check(tariff_parse_iso8601("2024-01-01T01:00:00+01:00", &parsed), "parse offset +01:00");
+  check(parsed == 1704067200, "offset +01:00 corresponds to UTC epoch");
+
+  check(tariff_parse_iso8601("2023-12-31T19:00:00-05:00", &parsed), "parse offset -05:00");
+  check(parsed == 1704067200, "offset -05:00 corresponds to UTC epoch");
+
+  // Day bounds calculation
+  time_t day_start = 0;
+  time_t day_end = 0;
+  check(tariff_get_utc_day_bounds(1704067200 + 43200, &day_start, &day_end), "day bounds for noon");
+  check(day_start == 1704067200, "day start is midnight");
+  check(day_end == 1704067200 + 86400, "day end is midnight next day");
+
+  // Apply interval: a 1.5h interval (3 slots)
+  RateSlot slots[TARIFF_SLOTS_PER_DAY];
+  for (size_t i = 0; i < TARIFF_SLOTS_PER_DAY; ++i) {
+    slots[i].valid = false;
+    slots[i].pence = 0.0f;
+  }
+  // From 01:00 to 02:30 -> slots 2, 3, 4
+  tariff_apply_interval(slots, day_start, day_end, day_start + 3600, day_start + 9000, 15.5f);
+  check(!slots[0].valid && !slots[1].valid, "slots before interval are invalid");
+  check(slots[2].valid && fabsf(slots[2].pence - 15.5f) < 0.001f, "slot 2 valid with 15.5p");
+  check(slots[3].valid && fabsf(slots[3].pence - 15.5f) < 0.001f, "slot 3 valid with 15.5p");
+  check(slots[4].valid && fabsf(slots[4].pence - 15.5f) < 0.001f, "slot 4 valid with 15.5p");
+  check(!slots[5].valid, "slot after interval is invalid");
+}
+
 }  // namespace
 
 int run_selftest() {
@@ -696,6 +739,7 @@ int run_selftest() {
   test_button_gestures();
   test_solar_forecast();
   test_screen_window();
+  test_tariff_math();
   printf("\n%d checks, %d failed\n", s_checks, s_failures);
   return s_failures == 0 ? 0 : 1;
 }

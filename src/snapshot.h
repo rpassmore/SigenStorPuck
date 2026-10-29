@@ -30,6 +30,7 @@ struct TariffSlot {
 // The server sends a handful of upcoming slots; more than this is not useful on
 // a 466 px screen, so extras are dropped at parse time.
 static constexpr size_t SNAPSHOT_MAX_TARIFF_SLOTS = 4;
+static constexpr size_t TARIFF_SLOTS_PER_DAY = 48;
 
 struct RateSlot {
   float pence = 0.0f;
@@ -37,8 +38,8 @@ struct RateSlot {
 };
 
 struct DayTariffRates {
-  RateSlot import_slots[48];
-  RateSlot export_slots[48];
+  RateSlot import_slots[TARIFF_SLOTS_PER_DAY];
+  RateSlot export_slots[TARIFF_SLOTS_PER_DAY];
   bool import_valid = false;
   bool export_valid = false;
   uint32_t fetched_time = 0;
