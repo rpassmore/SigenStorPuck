@@ -4,6 +4,7 @@
 #include <HTTPClient.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <esp_heap_caps.h>
 #include <time.h>
 
 #include "board_config.h"
@@ -18,14 +19,110 @@ constexpr uint16_t TOTAL_TIMEOUT_MS = 10000;
 constexpr int TARIFF_SLOT_COUNT = 48;
 constexpr int64_t HALF_HOUR_SECONDS = 30 * 60;
 constexpr uint16_t MAX_API_PAGES = 3;
+constexpr size_t PSRAM_HTTP_BUFFER_SIZE = 64 * 1024;
 
 constexpr const char* USER_AGENT = "SigenStorPuck/" PUCK_FW_VERSION " (ESP32-S3)";
 
 extern "C" const uint8_t rootca_crt_bundle_start[] asm("_binary_x509_crt_bundle_start");
 extern "C" const uint8_t rootca_crt_bundle_end[] asm("_binary_x509_crt_bundle_end");
 
+// Custom ArduinoJson 7 allocator routing document allocations to PSRAM
+struct PsramAllocator : ArduinoJson::Allocator {
+  void* allocate(size_t size) override {
+    void* ptr = nullptr;
+    if (psramFound()) {
+      ptr = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
+    return ptr ? ptr : malloc(size);
+  }
+
+  void deallocate(void* ptr) override {
+    free(ptr);
+  }
+
+  void* reallocate(void* ptr, size_t new_size) override {
+    void* p = nullptr;
+    if (psramFound()) {
+      p = heap_caps_realloc(ptr, new_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
+    return p ? p : realloc(ptr, new_size);
+  }
+};
+
+// Stream sink that buffers HTTP responses directly into PSRAM without internal SRAM allocations.
+class PsramBufferStream : public Stream {
+ public:
+  explicit PsramBufferStream(size_t capacity) {
+    if (psramFound()) {
+      _buffer = static_cast<char*>(heap_caps_malloc(capacity, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    }
+    if (!_buffer) {
+      _buffer = static_cast<char*>(malloc(capacity));
+    }
+    _capacity = _buffer ? capacity : 0;
+    if (_buffer) {
+      _buffer[0] = '\0';
+    }
+  }
+
+  ~PsramBufferStream() override {
+    if (_buffer) {
+      free(_buffer);
+    }
+  }
+
+  size_t write(uint8_t b) override {
+    if (!_buffer || _size + 1 >= _capacity) {
+      return 0;
+    }
+    _buffer[_size++] = static_cast<char>(b);
+    _buffer[_size] = '\0';
+    return 1;
+  }
+
+  size_t write(const uint8_t* buffer, size_t size) override {
+    if (!_buffer || size == 0) {
+      return 0;
+    }
+    if (_size + size >= _capacity) {
+      const size_t can_write = (_capacity > _size + 1) ? (_capacity - _size - 1) : 0;
+      if (can_write > 0) {
+        memcpy(_buffer + _size, buffer, can_write);
+        _size += can_write;
+        _buffer[_size] = '\0';
+      }
+      return can_write;
+    }
+    memcpy(_buffer + _size, buffer, size);
+    _size += size;
+    _buffer[_size] = '\0';
+    return size;
+  }
+
+  const char* c_str() const { return _buffer ? _buffer : ""; }
+  size_t length() const { return _size; }
+  bool isValid() const { return _buffer != nullptr; }
+
+  void clear() {
+    _size = 0;
+    if (_buffer) {
+      _buffer[0] = '\0';
+    }
+  }
+
+  int available() override { return 0; }
+  int read() override { return -1; }
+  int peek() override { return -1; }
+  void flush() override {}
+
+ private:
+  char* _buffer = nullptr;
+  size_t _capacity = 0;
+  size_t _size = 0;
+};
+
 struct RateTargetState {
-  String code;
+  char code[64] = {};
   uint32_t last_attempt_ms = 0;
   FetchResult last_result = FetchResult::NotConfigured;
   int last_fetch_day_of_year = -1;
@@ -41,21 +138,39 @@ bool clock_is_plausible() {
   return time(nullptr) > 1704067200;  // 1 Jan 2024
 }
 
-String build_tariff_url(const String& product_code, time_t day_start, time_t day_end) {
-  String url;
-  if (product_code.startsWith("E-1R-") || product_code.startsWith("E-2R-")) {
-    // A full tariff code was provided like E-1R-AGILE-24-10-01-L.
-    // Octopus tariff rate endpoint requires:
-    // /v1/products/<product_code>/electricity-tariffs/<tariff_code>/standard-unit-rates/
-    const int last_dash = product_code.lastIndexOf('-');
-    const String extracted_product =
-        (last_dash > 5) ? product_code.substring(5, last_dash) : product_code;
-    url = "https://api.octopus.energy/v1/products/" + extracted_product +
-          "/electricity-tariffs/" + product_code + "/standard-unit-rates/";
+bool build_tariff_url(const char* product_code, time_t day_start, time_t day_end,
+                      char* out_buf, size_t out_size) {
+  if (!product_code || product_code[0] == '\0' || !out_buf || out_size < 128) {
+    return false;
+  }
+
+  // A full tariff code was provided like E-1R-AGILE-24-10-01-L or E-2R-AGILE-24-10-01-L.
+  // Octopus tariff rate endpoint requires:
+  // /v1/products/<product_code>/electricity-tariffs/<tariff_code>/standard-unit-rates/
+  char extracted_product[64] = {};
+  const bool is_full_tariff = (strncmp(product_code, "E-1R-", 5) == 0 ||
+                               strncmp(product_code, "E-2R-", 5) == 0);
+
+  if (is_full_tariff) {
+    const char* last_dash = strrchr(product_code, '-');
+    if (last_dash && (last_dash - product_code > 5)) {
+      size_t prod_len = static_cast<size_t>(last_dash - (product_code + 5));
+      if (prod_len >= sizeof(extracted_product)) {
+        prod_len = sizeof(extracted_product) - 1;
+      }
+      memcpy(extracted_product, product_code + 5, prod_len);
+      extracted_product[prod_len] = '\0';
+    } else {
+      snprintf(extracted_product, sizeof(extracted_product), "%s", product_code);
+    }
+    snprintf(out_buf, out_size,
+             "https://api.octopus.energy/v1/products/%s/electricity-tariffs/%s/standard-unit-rates/",
+             extracted_product, product_code);
   } else {
     // Standard product code like AGILE-24-10-01 -> assume Region L (South West)
-    url = "https://api.octopus.energy/v1/products/" + product_code +
-          "/electricity-tariffs/E-1R-" + product_code + "-L/standard-unit-rates/";
+    snprintf(out_buf, out_size,
+             "https://api.octopus.energy/v1/products/%s/electricity-tariffs/E-1R-%s-L/standard-unit-rates/",
+             product_code, product_code);
   }
 
   if (day_start > 0 && day_end > day_start) {
@@ -71,10 +186,15 @@ String build_tariff_url(const String& product_code, time_t day_start, time_t day
     snprintf(to_buf, sizeof(to_buf), "%04d-%02d-%02dT%02d:%02d:%02dZ",
              tm_to.tm_year + 1900, tm_to.tm_mon + 1, tm_to.tm_mday,
              tm_to.tm_hour, tm_to.tm_min, tm_to.tm_sec);
-    url += "?period_from=" + String(from_buf) + "&period_to=" + String(to_buf) + "&page_size=100";
+
+    const size_t cur_len = strlen(out_buf);
+    if (cur_len < out_size) {
+      snprintf(out_buf + cur_len, out_size - cur_len,
+               "?period_from=%s&period_to=%s&page_size=100", from_buf, to_buf);
+    }
   }
 
-  return url;
+  return true;
 }
 
 void clear_slots(RateSlot slots[TARIFF_SLOT_COUNT]) {
@@ -230,11 +350,20 @@ FetchResult fetch_rates_for_code(const String& product_code, RateSlot slots[TARI
   tls.setCACertBundle(rootca_crt_bundle_start,
                     static_cast<size_t>(rootca_crt_bundle_end - rootca_crt_bundle_start));
 
-  String url = build_tariff_url(product_code, day_start, day_end);
+  char url[512] = {};
+  if (!build_tariff_url(product_code.c_str(), day_start, day_end, url, sizeof(url))) {
+    return FetchResult::BadPayload;
+  }
+
+  PsramBufferStream payload_buffer(PSRAM_HTTP_BUFFER_SIZE);
+  if (!payload_buffer.isValid()) {
+    return FetchResult::BadPayload;
+  }
+
   int loaded_count = 0;
   bool saw_results = false;
 
-  for (uint16_t page = 0; page < MAX_API_PAGES && !url.isEmpty(); ++page) {
+  for (uint16_t page = 0; page < MAX_API_PAGES && url[0] != '\0'; ++page) {
     // due to a bug in the underlying network libs need to reattach the certs
     tls.setCACertBundle(rootca_crt_bundle_start,
       static_cast<size_t>(rootca_crt_bundle_end - rootca_crt_bundle_start));
@@ -247,7 +376,7 @@ FetchResult fetch_rates_for_code(const String& product_code, RateSlot slots[TARI
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
     http.addHeader("Accept", "application/json");
 
-    Serial.printf("url %s\n", url.c_str());
+    Serial.printf("url %s\n", url);
     if (!http.begin(tls, url)) {
       return FetchResult::TlsFailed;
     }
@@ -263,11 +392,27 @@ FetchResult fetch_rates_for_code(const String& product_code, RateSlot slots[TARI
       return FetchResult::HttpError;
     }
 
-    const String body = http.getString();
+    payload_buffer.clear();
+    const int written = http.writeToStream(&payload_buffer);
     http.end();
 
-    JsonDocument doc;
-    const DeserializationError error = deserializeJson(doc, body);
+    if (written < 0 || payload_buffer.length() == 0) {
+      return FetchResult::BadPayload;
+    }
+
+    PsramAllocator json_allocator;
+    JsonDocument doc(&json_allocator);
+
+    // Filter to retain only relevant properties in PSRAM, discarding all unused JSON metadata
+    JsonDocument filter;
+    filter["next"] = true;
+    JsonObject filter_entry = filter["results"].add<JsonObject>();
+    filter_entry["valid_from"] = true;
+    filter_entry["valid_to"] = true;
+    filter_entry["value_inc_vat"] = true;
+
+    const DeserializationError error =
+        deserializeJson(doc, payload_buffer.c_str(), DeserializationOption::Filter(filter));
     if (error != DeserializationError::Ok) {
       return FetchResult::BadPayload;
     }
@@ -318,7 +463,12 @@ FetchResult fetch_rates_for_code(const String& product_code, RateSlot slots[TARI
     // Octopus supplies an absolute URL in "next". Use it directly so this
     // works regardless of page size or query parameters chosen by the API.
     const char* next = doc["next"];
-    url = next ? String(next) : String();
+    if (next && next[0] != '\0') {
+      strncpy(url, next, sizeof(url) - 1);
+      url[sizeof(url) - 1] = '\0';
+    } else {
+      url[0] = '\0';
+    }
   }
 
   if (!saw_results) {
@@ -372,15 +522,16 @@ FetchResult tariff_rates_service() {
 
   // Process Import Tariff
   if (imp_code.isEmpty()) {
-    if (s_rates.import_valid || !s_imp_state.code.isEmpty()) {
+    if (s_rates.import_valid || s_imp_state.code[0] != '\0') {
       clear_slots(s_rates.import_slots);
       s_rates.import_valid = false;
       s_imp_state = {};
     }
   } else {
-    const bool code_changed = (imp_code != s_imp_state.code);
+    const bool code_changed = (strcmp(imp_code.c_str(), s_imp_state.code) != 0);
     if (code_changed) {
-      s_imp_state.code = imp_code;
+      strncpy(s_imp_state.code, imp_code.c_str(), sizeof(s_imp_state.code) - 1);
+      s_imp_state.code[sizeof(s_imp_state.code) - 1] = '\0';
       s_imp_state.last_attempt_ms = 0;
       s_imp_state.last_result = FetchResult::NotConfigured;
       s_imp_state.last_fetch_day_of_year = -1;
@@ -431,15 +582,16 @@ FetchResult tariff_rates_service() {
 
   // Process Export Tariff
   if (exp_code.isEmpty()) {
-    if (s_rates.export_valid || !s_exp_state.code.isEmpty()) {
+    if (s_rates.export_valid || s_exp_state.code[0] != '\0') {
       clear_slots(s_rates.export_slots);
       s_rates.export_valid = false;
       s_exp_state = {};
     }
   } else {
-    const bool code_changed = (exp_code != s_exp_state.code);
+    const bool code_changed = (strcmp(exp_code.c_str(), s_exp_state.code) != 0);
     if (code_changed) {
-      s_exp_state.code = exp_code;
+      strncpy(s_exp_state.code, exp_code.c_str(), sizeof(s_exp_state.code) - 1);
+      s_exp_state.code[sizeof(s_exp_state.code) - 1] = '\0';
       s_exp_state.last_attempt_ms = 0;
       s_exp_state.last_result = FetchResult::NotConfigured;
       s_exp_state.last_fetch_day_of_year = -1;

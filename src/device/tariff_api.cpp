@@ -4,7 +4,7 @@
 #include <HTTPClient.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
-#include <set>
+#include <esp_heap_caps.h>
 #include <time.h>
 
 #include "board_config.h"
@@ -21,11 +21,107 @@ constexpr uint32_t RETRY_MS = 60 * 1000;
 
 constexpr uint16_t CONNECT_TIMEOUT_MS = 4000;
 constexpr uint16_t TOTAL_TIMEOUT_MS = 8000;
+constexpr size_t PSRAM_HTTP_BUFFER_SIZE = 64 * 1024;
 
 constexpr const char* USER_AGENT = "SigenStorPuck/" PUCK_FW_VERSION " (ESP32-S3)";
 
 extern "C" const uint8_t rootca_crt_bundle_start[] asm("_binary_x509_crt_bundle_start");
 extern "C" const uint8_t rootca_crt_bundle_end[] asm("_binary_x509_crt_bundle_end");
+
+// Custom ArduinoJson 7 allocator routing document allocations to PSRAM
+struct PsramAllocator : ArduinoJson::Allocator {
+  void* allocate(size_t size) override {
+    void* ptr = nullptr;
+    if (psramFound()) {
+      ptr = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
+    return ptr ? ptr : malloc(size);
+  }
+
+  void deallocate(void* ptr) override {
+    free(ptr);
+  }
+
+  void* reallocate(void* ptr, size_t new_size) override {
+    void* p = nullptr;
+    if (psramFound()) {
+      p = heap_caps_realloc(ptr, new_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
+    return p ? p : realloc(ptr, new_size);
+  }
+};
+
+// Stream sink buffering HTTP responses in PSRAM without internal SRAM allocations.
+class PsramBufferStream : public Stream {
+ public:
+  explicit PsramBufferStream(size_t capacity) {
+    if (psramFound()) {
+      _buffer = static_cast<char*>(heap_caps_malloc(capacity, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    }
+    if (!_buffer) {
+      _buffer = static_cast<char*>(malloc(capacity));
+    }
+    _capacity = _buffer ? capacity : 0;
+    if (_buffer) {
+      _buffer[0] = '\0';
+    }
+  }
+
+  ~PsramBufferStream() override {
+    if (_buffer) {
+      free(_buffer);
+    }
+  }
+
+  size_t write(uint8_t b) override {
+    if (!_buffer || _size + 1 >= _capacity) {
+      return 0;
+    }
+    _buffer[_size++] = static_cast<char>(b);
+    _buffer[_size] = '\0';
+    return 1;
+  }
+
+  size_t write(const uint8_t* buffer, size_t size) override {
+    if (!_buffer || size == 0) {
+      return 0;
+    }
+    if (_size + size >= _capacity) {
+      const size_t can_write = (_capacity > _size + 1) ? (_capacity - _size - 1) : 0;
+      if (can_write > 0) {
+        memcpy(_buffer + _size, buffer, can_write);
+        _size += can_write;
+        _buffer[_size] = '\0';
+      }
+      return can_write;
+    }
+    memcpy(_buffer + _size, buffer, size);
+    _size += size;
+    _buffer[_size] = '\0';
+    return size;
+  }
+
+  const char* c_str() const { return _buffer ? _buffer : ""; }
+  size_t length() const { return _size; }
+  bool isValid() const { return _buffer != nullptr; }
+
+  void clear() {
+    _size = 0;
+    if (_buffer) {
+      _buffer[0] = '\0';
+    }
+  }
+
+  int available() override { return 0; }
+  int read() override { return -1; }
+  int peek() override { return -1; }
+  void flush() override {}
+
+ private:
+  char* _buffer = nullptr;
+  size_t _capacity = 0;
+  size_t _size = 0;
+};
 
 std::vector<TariffProduct> s_import_products;
 std::vector<TariffProduct> s_export_products;
@@ -36,6 +132,16 @@ bool s_ready = false;
 
 bool clock_is_plausible() {
   return time(nullptr) > 1704067200;  // 1 Jan 2024
+}
+
+bool has_product_code(const std::vector<TariffProduct>& list, const char* code) {
+  if (!code) return false;
+  for (const auto& item : list) {
+    if (item.code == code) {
+      return true;
+    }
+  }
+  return false;
 }
 
 FetchResult fetch_products() {
@@ -50,8 +156,6 @@ FetchResult fetch_products() {
   std::vector<TariffProduct> new_exports;
   new_imports.reserve(50);
   new_exports.reserve(50);
-  std::set<String> seen_imports;
-  std::set<String> seen_exports;
 
   const time_t now = time(nullptr);
   constexpr time_t WEEK_SECONDS = 7 * 24 * 3600;
@@ -59,6 +163,15 @@ FetchResult fetch_products() {
 
   bool any_http_success = false;
   FetchResult last_error = FetchResult::HttpError;
+
+  WiFiClientSecure tls;
+  tls.setCACertBundle(rootca_crt_bundle_start,
+                      static_cast<size_t>(rootca_crt_bundle_end - rootca_crt_bundle_start));
+
+  PsramBufferStream payload_buffer(PSRAM_HTTP_BUFFER_SIZE);
+  if (!payload_buffer.isValid()) {
+    return FetchResult::BadPayload;
+  }
 
   for (int week = 0; week <= WEEKS_COUNT; ++week) {
     const time_t sample_time = now - static_cast<time_t>(week) * WEEK_SECONDS;
@@ -69,9 +182,9 @@ FetchResult fetch_products() {
              tm_buf.tm_year + 1900, tm_buf.tm_mon + 1, tm_buf.tm_mday,
              tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec);
 
-    const String url = String(HOST) + "?available_at=" + time_str;
-    
-    WiFiClientSecure tls;
+    char url[128];
+    snprintf(url, sizeof(url), "%s?available_at=%s", HOST, time_str);
+
     tls.setCACertBundle(rootca_crt_bundle_start,
                         static_cast<size_t>(rootca_crt_bundle_end - rootca_crt_bundle_start));
 
@@ -102,11 +215,28 @@ FetchResult fetch_products() {
       continue;
     }
 
-    const String body = http.getString();
+    payload_buffer.clear();
+    const int written = http.writeToStream(&payload_buffer);
     http.end();
 
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, body);
+    if (written < 0 || payload_buffer.length() == 0) {
+      last_error = FetchResult::BadPayload;
+      delay(1);
+      continue;
+    }
+
+    PsramAllocator json_allocator;
+    JsonDocument doc(&json_allocator);
+
+    // Retain only fields of interest to minimize memory consumption
+    JsonDocument filter;
+    JsonObject filter_prod = filter["results"].add<JsonObject>();
+    filter_prod["code"] = true;
+    filter_prod["full_name"] = true;
+    filter_prod["direction"] = true;
+
+    const DeserializationError error =
+        deserializeJson(doc, payload_buffer.c_str(), DeserializationOption::Filter(filter));
     if (error != DeserializationError::Ok) {
       last_error = FetchResult::BadPayload;
       delay(1);
@@ -130,20 +260,15 @@ FetchResult fetch_products() {
         continue;
       }
 
-      TariffProduct product;
-      product.code = String(code);
-      product.display_name = String(name);
+      const bool is_export = (direction && strcmp(direction, "EXPORT") == 0);
+      std::vector<TariffProduct>& target_list = is_export ? new_exports : new_imports;
 
-      if (direction && strcmp(direction, "EXPORT") == 0) {
-        product.is_export = true;
-        if (seen_exports.insert(product.code).second) {
-          new_exports.push_back(product);
-        }
-      } else {
-        product.is_export = false;
-        if (seen_imports.insert(product.code).second) {
-          new_imports.push_back(product);
-        }
+      if (!has_product_code(target_list, code)) {
+        TariffProduct product;
+        product.code = code;
+        product.display_name = name;
+        product.is_export = is_export;
+        target_list.push_back(std::move(product));
       }
     }
 
