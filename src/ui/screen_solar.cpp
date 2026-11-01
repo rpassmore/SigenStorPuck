@@ -19,6 +19,8 @@ namespace {
 
 // Smoothing for solar band is wider (13) to smooth out broken cloud picket fence.
 constexpr uint8_t BAND_SMOOTHING = 13;
+constexpr lv_opa_t FORECAST_GHOST = 46;
+
 // 288 columns for the forecast band, allocated in PSRAM by screen_solar_create().
 HistoryColumn* s_forecast_cols = nullptr;
 
@@ -45,29 +47,29 @@ void set_forecast_figure(lv_obj_t* label, const Snapshot& snapshot, const MaybeF
   lv_label_set_text(label, text);
 }
 
-void position_optional_figure(lv_obj_t* caption, lv_obj_t* value, int8_t slot) {
-  if (slot == SolarOptionalMetricSlots::Hidden) {
-    lv_obj_add_flag(caption, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(value, LV_OBJ_FLAG_HIDDEN);
-    return;
-  }
+// void position_optional_figure(lv_obj_t* caption, lv_obj_t* value, int8_t slot) {
+//   if (slot == SolarOptionalMetricSlots::Hidden) {
+//     lv_obj_add_flag(caption, LV_OBJ_FLAG_HIDDEN);
+//     lv_obj_add_flag(value, LV_OBJ_FLAG_HIDDEN);
+//     return;
+//   }
 
-  // Total forecast owns slot zero. A figure the source can never supply leaves no
-  // hole: the ones it can supply close up behind the total.
-  const bool right = (slot & 1) != 0;
-  const bool second_row = slot >= 2;
-  const lv_coord_t x = right ? COLUMN_X : -COLUMN_X;
-  const lv_coord_t caption_y = second_row ? ROW_TWO_LABEL_Y : ROW_ONE_LABEL_Y;
-  const lv_coord_t value_y = second_row ? ROW_TWO_VALUE_Y : ROW_ONE_VALUE_Y;
-  lv_obj_align(caption, LV_ALIGN_CENTER, x, caption_y);
-  lv_obj_align(value, LV_ALIGN_CENTER, x, value_y);
-  lv_obj_clear_flag(caption, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_clear_flag(value, LV_OBJ_FLAG_HIDDEN);
-}
+//   // Total forecast owns slot zero. A figure the source can never supply leaves no
+//   // hole: the ones it can supply close up behind the total.
+//   const bool right = (slot & 1) != 0;
+//   const bool second_row = slot >= 2;
+//   const lv_coord_t x = right ? COLUMN_X : -COLUMN_X;
+//   const lv_coord_t caption_y = second_row ? ROW_TWO_LABEL_Y : ROW_ONE_LABEL_Y;
+//   const lv_coord_t value_y = second_row ? ROW_TWO_VALUE_Y : ROW_ONE_VALUE_Y;
+//   lv_obj_align(caption, LV_ALIGN_CENTER, x, caption_y);
+//   lv_obj_align(value, LV_ALIGN_CENTER, x, value_y);
+//   lv_obj_clear_flag(caption, LV_OBJ_FLAG_HIDDEN);
+//   lv_obj_clear_flag(value, LV_OBJ_FLAG_HIDDEN);
+// }
 
 }  // namespace
 
-lv_obj_t* screen_solar_create(lv_obj_t* parent) {
+lv_obj_t* screen_solar_create(lv_obj_t* parent, uint8_t figures) {
   s_root = puck_create_screen_root(parent);
 
   s_arc.create(s_root, PUCK_COLOUR_SOLAR, /*hidden=*/true);
@@ -176,15 +178,15 @@ void screen_solar_update(const Snapshot& snapshot) {
   }
   s_pill.set_active(generating);
 
-  set_forecast_figure(s_forecast, snapshot, snapshot.solar.forecast_kwh, 1, " kWh");
+  set_forecast_figure(s_stats.top_left.value, snapshot, snapshot.solar.forecast_kwh, 1, " kWh");
   if (s_slots.remaining != SolarOptionalMetricSlots::Hidden) {
-    set_forecast_figure(s_remaining, snapshot, snapshot.solar.remaining_kwh, 1, " kWh");
+      set_forecast_figure(s_stats.top_right.value, snapshot, snapshot.solar.remaining_kwh, 1, " kWh");
   }
   if (s_slots.vs_forecast != SolarOptionalMetricSlots::Hidden) {
-    set_forecast_figure(s_versus, snapshot, snapshot.solar.vs_forecast_pct, 0, "%");
+    set_forecast_figure(s_stats.bottom_left.value, snapshot, snapshot.solar.vs_forecast_pct, 0, "%");
   }
   if (s_slots.peak != SolarOptionalMetricSlots::Hidden) {
-    set_forecast_figure(s_peak, snapshot, snapshot.solar.peak_kw, 1, " kW");
+    set_forecast_figure(s_stats.bottom_right.value, snapshot, snapshot.solar.peak_kw, 1, " kW");
   }
 }
 
