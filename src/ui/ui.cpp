@@ -81,7 +81,7 @@ bool screen_has_chart(int index) {
   }
   const PuckScreen screen = s_screen_at[index];
   return screen == PUCK_SCREEN_BATTERY || screen == PUCK_SCREEN_SOLAR ||
-         screen == PUCK_SCREEN_LOAD || screen == PUCK_SCREEN_GRID;
+         screen == PUCK_SCREEN_LOAD || screen == PUCK_SCREEN_GRID || screen == PUCK_SCREEN_RATES;
 }
 
 // The live reading and the viewed day, held apart because different screens want
@@ -557,9 +557,6 @@ void refresh_screens() {
         break;
       case PUCK_SCREEN_COST:
         screen_cost_update(day);
-        break;
-      case PUCK_SCREEN_RATES:
-        screen_rates_update(day);
         break;
       default:
         break;
