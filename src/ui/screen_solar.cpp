@@ -70,6 +70,7 @@ void set_forecast_figure(lv_obj_t* label, const Snapshot& snapshot, const MaybeF
 }  // namespace
 
 lv_obj_t* screen_solar_create(lv_obj_t* parent, uint8_t figures) {
+  s_slots = solar_optional_metric_slots(figures);
   s_root = puck_create_screen_root(parent);
 
   s_arc.create(s_root, PUCK_COLOUR_SOLAR, /*hidden=*/true);

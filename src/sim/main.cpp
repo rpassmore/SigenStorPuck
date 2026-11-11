@@ -397,6 +397,17 @@ void show_current_fixture() {
 
   lv_obj_set_style_text_color(s_body, lv_color_hex(COLOUR_TEXT), LV_PART_MAIN);
   lv_label_set_text(s_body, describe(snapshot).c_str());
+
+  // If the fixture does not supply a solar forecast block, provide a sensible
+  // default in the simulator so the solar screen forecast fields are populated.
+  if (!snapshot.solar.configured && snapshot.power.pv.known) {
+    snapshot.solar.configured = true;
+    snapshot.solar.forecast_kwh = {true, 18.5f};
+    snapshot.solar.remaining_kwh = {true, 6.1f};
+    snapshot.solar.vs_forecast_pct = {true, 105.0f};
+    snapshot.solar.peak_kw = {true, 4.2f};
+  }
+
   // Rebuilt per fixture, so stepping between them does not leave the previous
   // fixture's day behind the new one's numbers.
   synthesise_history(snapshot);

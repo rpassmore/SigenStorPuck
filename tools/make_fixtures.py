@@ -58,7 +58,7 @@ def generate_day_rates(import_base=15.0, export_base=8.0):
 
 def summary(*, age=3, ok=True, pv=0.0, grid=0.0, batt=0.0, ev=0.0, off_grid=False,
             soc=50.0, soh=99.0, capacity=16.0, temp=24.5, eta=None,
-            today=..., cost=..., day_rates=..., alarms=0, home_override=...):
+            today=..., solar=..., cost=..., day_rates=..., alarms=0, home_override=...):
     doc = {
         "v": 1,
         "ts": TS,
@@ -84,6 +84,13 @@ def summary(*, age=3, ok=True, pv=0.0, grid=0.0, batt=0.0, ev=0.0, off_grid=Fals
             "solar": 12.4, "import": 3.1, "export": 5.2,
             "load": 9.8, "charge": 6.0, "discharge": 4.2,
         } if today is ... else today,
+        "solar": {
+            "configured": True,
+            "forecast": 18.5,
+            "remaining": 6.1,
+            "vs_forecast": 105.0,
+            "peak_kw": 4.2,
+        } if solar is ... else solar,
         "cost": {
             "configured": True,
             "saving_gbp": 1.23,
