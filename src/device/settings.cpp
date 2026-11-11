@@ -100,14 +100,14 @@ void settings_begin() {
   s_settings.rotate_s = prefs.getUInt(KEY_ROTATE, s_settings.rotate_s);
   s_settings.sweep_min = prefs.getUInt(KEY_SWEEP, s_settings.sweep_min);
   s_settings.rotate_enabled = prefs.getBool(KEY_ROT_ON, s_settings.rotate_enabled);
-  s_settings.screens_visible = prefs.getUChar(KEY_SCR_VIS, s_settings.screens_visible);
-  s_settings.screens_rotate = prefs.getUChar(KEY_SCR_ROT, s_settings.screens_rotate);
+  s_settings.screens_visible = prefs.getUShort(KEY_SCR_VIS, s_settings.screens_visible);
+  s_settings.screens_rotate = prefs.getUShort(KEY_SCR_ROT, s_settings.screens_rotate);
   if (prefs.isKey(KEY_SCR_VIS)) {
     // Screens newer than the stored masks start on, like on a fresh device.
     const uint8_t known = prefs.getUChar(KEY_SCR_KNOWN, SCREENS_BEFORE_KNOWN_KEY);
     for (uint8_t i = known; i < PUCK_SCREEN_COUNT; ++i) {
-      s_settings.screens_visible |= static_cast<uint8_t>(1u << i);
-      s_settings.screens_rotate |= static_cast<uint8_t>(1u << i);
+      s_settings.screens_visible |= static_cast<uint16_t>(1u << i);
+      s_settings.screens_rotate |= static_cast<uint16_t>(1u << i);
     }
   }
   s_settings.check_updates = prefs.getBool(KEY_UPDATES, s_settings.check_updates);
@@ -592,13 +592,13 @@ bool settings_set_rotate_enabled(bool enabled) {
   return true;
 }
 
-bool settings_set_screens(uint8_t visible, uint8_t rotate) {
+bool settings_set_screens(uint16_t visible, uint16_t rotate) {
   Preferences prefs;
   if (!prefs.begin(NAMESPACE, /*readOnly=*/false)) {
     return false;
   }
-  prefs.putUChar(KEY_SCR_VIS, visible);
-  prefs.putUChar(KEY_SCR_ROT, rotate);
+  prefs.putUShort(KEY_SCR_VIS, visible);
+  prefs.putUShort(KEY_SCR_ROT, rotate);
   prefs.putUChar(KEY_SCR_KNOWN, PUCK_SCREEN_COUNT);
   prefs.end();
   s_settings.screens_visible = visible;
