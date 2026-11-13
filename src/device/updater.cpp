@@ -35,8 +35,15 @@ namespace {
 // PUCK_FW_VERSION publishes nothing a device will act on.
 //
 // Redirects are still followed: Pages serves these through a CDN.
-constexpr const char* MANIFEST_URL = "https://markab.github.io/SigenStorPuck/manifest.json";
-constexpr const char* FIRMWARE_URL = "https://markab.github.io/SigenStorPuck/firmware.bin";
+//
+// Per-board: each variant fetches its own slug's manifest and image
+// (SigenStorPuck/<slug>/...), so a 2.41 never pulls a 1.75 build. The two share a
+// version, so the URL — built from the compile-time PUCK_BOARD_SLUG — is the
+// discriminator, backed up by the `board` field check below.
+constexpr const char* MANIFEST_URL =
+    "https://markab.github.io/SigenStorPuck/" PUCK_BOARD_SLUG "/manifest.json";
+constexpr const char* FIRMWARE_URL =
+    "https://markab.github.io/SigenStorPuck/" PUCK_BOARD_SLUG "/firmware.bin";
 
 // Opening the settings page starts a check, and saving any form re-renders it, so
 // without a floor a few minutes of fiddling with settings would be a few dozen
@@ -202,6 +209,17 @@ UpdateStatus perform_check() {
     return result;
   }
 
+  // Cross-flash guard: never act on a manifest built for another board. The
+  // per-slug URL already keeps them apart; this catches a misplaced manifest,
+  // which matters because the two variants share a version and so cannot be told
+  // apart by version alone. An absent board field is allowed (older manifests).
+  const String board = doc["board"] | "";
+  if (!board.isEmpty() && board != PUCK_BOARD_SLUG) {
+    result.state = UpdateState::Failed;
+    result.message = "the release is for a different board";
+    return result;
+  }
+
   const bool newer = is_newer(result.latest_version, String(PUCK_FW_VERSION));
   result.state = newer ? UpdateState::Available : UpdateState::UpToDate;
   result.message = newer ? "" : "This is the latest release.";
@@ -265,7 +283,12 @@ bool updater_enabled() {
 }
 
 void updater_request_check(bool force) {
-  if (!updater_enabled() || s_check_pending) {
+  // The automatic check (page open) is opt-in; the button is not, because
+  // pressing it is the asking. It used to bypass this by checking synchronously
+  // from the page handler instead — on the LVGL thread, and possibly alongside the
+  // poll task's own TLS session — which froze the screen for the round trip and
+  // could fail the handshake for want of a second session's heap.
+  if ((!updater_enabled() && !force) || s_check_pending) {
     return;
   }
   if (WiFi.status() != WL_CONNECTED) {
@@ -299,12 +322,6 @@ void updater_service() {
     return;
   }
   s_check_pending = false;
-  publish(perform_check());
-  s_last_check_ms = millis();
-  s_ever_checked = true;
-}
-
-void updater_check() {
   publish(perform_check());
   s_last_check_ms = millis();
   s_ever_checked = true;

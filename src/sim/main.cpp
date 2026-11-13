@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "board_config.h"
+#include "forecast_store.h"
 #include "history.h"
 #include "sim_backend.h"
 #include "snapshot.h"
@@ -41,7 +42,7 @@ int16_t s_startup_tilt = 0;
 // --modbus previews the reduced arrangement that data source gets: no cost
 // screen and no flows screen (§D1), which is otherwise only visible on a device
 // configured for it.
-bool s_with_server_screens = true;
+bool s_with_detailed_screens = true;
 
 // The real screen, plus the raw field dump kept behind the 'd' key. Keeping the
 // dump around is worth its few lines: when a screen shows something surprising,
@@ -341,6 +342,33 @@ void synthesise_history(const Snapshot& snapshot) {
       }
       history_put(HistoryBank::Live, HistorySeries::Soc, minute, soc);
     }
+
+    // Grid: load minus generation, signed. Import (positive) morning and evening,
+    // export (negative) through the solar middle of the day — a bipolar curve for
+    // the grid screen's chart.
+    if (snapshot.power.grid.known) {
+      const float cloud =
+          overcast ? 0.35f + 0.5f * hash01(minute) : cloud_factor(minute, local);
+      const float pv_now = snapshot.power.pv.known ? peak * solar_shape(local) * cloud : 0.0f;
+      const float morning = expf(-powf((local - 450) / 90.0f, 2.0f));
+      const float evening = expf(-powf((local - 1140) / 120.0f, 2.0f));
+      const float load_now = 0.35f + 1.4f * morning + 2.2f * evening;
+      history_put(HistoryBank::Live, HistorySeries::Grid, minute, load_now - pv_now);
+    }
+  }
+
+  // A clear-sky forecast for the whole day, for the solar screen's "forecast
+  // ahead". Same bell as the actual but without the cloud, so it sits a little
+  // above the cloud-broken generation and runs on past now to dusk.
+  if (snapshot.power.pv.known && peak > 0.05f) {
+    const uint32_t day_start = end - static_cast<uint32_t>(end_local);
+    float slot_kw[48];
+    for (int i = 0; i < 48; ++i) {
+      slot_kw[i] = peak * solar_shape(i * 30 + 15);  // average kW in the slot
+    }
+    forecast_store_set(slot_kw, 48, day_start);
+  } else {
+    forecast_store_clear();
   }
 }
 
@@ -369,6 +397,17 @@ void show_current_fixture() {
 
   lv_obj_set_style_text_color(s_body, lv_color_hex(COLOUR_TEXT), LV_PART_MAIN);
   lv_label_set_text(s_body, describe(snapshot).c_str());
+
+  // If the fixture does not supply a solar forecast block, provide a sensible
+  // default in the simulator so the solar screen forecast fields are populated.
+  if (!snapshot.solar.configured && snapshot.power.pv.known) {
+    snapshot.solar.configured = true;
+    snapshot.solar.forecast_kwh = {true, 18.5f};
+    snapshot.solar.remaining_kwh = {true, 6.1f};
+    snapshot.solar.vs_forecast_pct = {true, 105.0f};
+    snapshot.solar.peak_kw = {true, 4.2f};
+  }
+
   // Rebuilt per fixture, so stepping between them does not leave the previous
   // fixture's day behind the new one's numbers.
   synthesise_history(snapshot);
@@ -427,7 +466,7 @@ void build_views() {
   lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
 
   UiConfig config;
-  config.with_server_screens = s_with_server_screens;
+  config.with_detailed_screens = s_with_detailed_screens;
   ui_create(screen, config);
 
   // A stand-in for what net_hostname()/net_ip() return on the device, so the
@@ -646,6 +685,33 @@ int run_screenshot_pass(const std::string& output_directory) {
     }
   }
 
+  // The return to today, which runs on LVGL's inactivity clock — real time in the
+  // sim, so the timeout is shortened to two seconds for the check rather than
+  // waited out. Both halves are checked, because a return that fired at once would
+  // pass the second on its own: still on the past day a second after the press
+  // that put it there, and back on today once the timeout has passed.
+  {
+    ui_set_day_return(2);
+    ui_set_day_offset(-1);
+    lv_disp_trig_activity(nullptr);  // what the press that stepped back does
+    const auto run_for = [](uint32_t ms) {
+      for (uint32_t t = 0; t < ms; t += 20) {
+        sim_backend_delay(20);
+        lv_timer_handler();
+      }
+    };
+    run_for(1000);
+    const bool held = ui_day_offset() == -1;
+    run_for(2500);
+    const bool returned = ui_day_offset() == 0;
+    printf("[sim] day return: %s while recent, %s after the timeout\n",
+           held ? "held" : "RETURNED EARLY", returned ? "back to today" : "STILL ON A PAST DAY");
+    if (!held || !returned) {
+      ++failures;
+    }
+    ui_set_day_return(0);
+  }
+
   ui_set_day_offset(0);
   ui_clear_day();
 
@@ -676,7 +742,7 @@ int main(int argc, char** argv) {
     if (argument == "--selftest") {
       return run_selftest();
     } else if (argument == "--modbus") {
-      s_with_server_screens = false;
+      s_with_detailed_screens = false;
     } else if (argument == "--shot" && i + 1 < argc) {
       shot_directory = argv[++i];
     } else if (argument == "--tilt" && i + 1 < argc) {

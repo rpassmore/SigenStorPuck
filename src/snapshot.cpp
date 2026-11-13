@@ -63,7 +63,12 @@ bool snapshot_parse(const char* json, size_t length, Snapshot* out) {
   parsed.power.home = maybe_float(power["home"]);
   parsed.power.ev = maybe_float(power["ev"]);
   parsed.power.plant = maybe_float(power["plant"]);
+  parsed.power.off_grid_known = !power["off_grid"].isNull();
   parsed.power.off_grid = power["off_grid"] | false;
+  // Absent from a server older than 0.26.0, which leaves the grid screen's
+  // top-right quadrant empty rather than showing a false zero.
+  parsed.power.grid_freq_hz = maybe_float(power["grid_freq_hz"]);
+  parsed.power.grid_voltage_v = maybe_float(power["grid_voltage_v"]);
 
   JsonVariantConst battery = doc["battery"];
   parsed.battery.soc_pct = maybe_float(battery["soc"]);
@@ -97,8 +102,8 @@ bool snapshot_parse(const char* json, size_t length, Snapshot* out) {
   }
 
   // Absent entirely from a server older than 0.15.0, which leaves configured
-  // false and every figure unknown — exactly the state the Modbus source is in
-  // permanently, so the screen needs no separate "old server" path.
+  // false and every figure unknown — the same honest shape used by any source
+  // whose forecast is disabled or incomplete.
   JsonVariantConst solar = doc["solar"];
   parsed.solar.configured = solar["configured"] | false;
   parsed.solar.forecast_kwh = maybe_float(solar["forecast"]);

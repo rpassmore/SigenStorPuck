@@ -3,7 +3,9 @@
 #include <math.h>
 
 #include "board_config.h"
+#include "psram_alloc.h"
 #include "theme.h"
+#include "ui_perf.h"
 
 namespace {
 
@@ -13,8 +15,11 @@ namespace {
 constexpr lv_coord_t COLUMN_PX = 2;
 
 // Enough for a band spanning the whole panel, not just the safe square: a
-// bezel-clipped band is drawn edge to edge and lets the glass cut the ends.
-constexpr size_t MAX_COLUMNS = 240;  // a full-width band at COLUMN_PX
+// bezel-clipped band is drawn edge to edge and lets the glass cut the ends. Taken
+// from the board's width rather than fixed, because a fixed cap was sized for one
+// board and silently cut short a band on a wider one: it stops at the last column
+// rather than failing. The arrays it sizes are in PSRAM (chart_band_create()).
+constexpr size_t MAX_COLUMNS = (PUCK_LCD_WIDTH + COLUMN_PX - 1) / COLUMN_PX;
 
 // Three weights, which is what makes this an envelope rather than a silhouette:
 // a faint wash under the curve, the column's own min-to-max spread picked out a
@@ -44,7 +49,11 @@ constexpr uint8_t MAX_SMOOTHING = 15;
 constexpr lv_coord_t CENTRE_X = PUCK_LCD_WIDTH / 2;
 constexpr lv_coord_t CENTRE_Y = PUCK_LCD_HEIGHT / 2;
 
-constexpr size_t MAX_BANDS = 4;
+// Enough for every band alive at once: battery (1), solar (2, actual + forecast),
+// load (1) and, on the landscape UI, grid (1). Each carries a MAX_COLUMNS reduce
+// cache (12 bytes a column: ~3.6 KB on the 2.41), so the pool is sized to what
+// the screens actually build.
+constexpr size_t MAX_BANDS = 6;
 
 struct Band {
   bool used = false;
@@ -58,13 +67,23 @@ struct Band {
   uint8_t smoothing = 1;
   lv_coord_t clip_radius = 0;
 
+  // Bipolar: a signed series drawn about a centre zero line, filling up in
+  // `colour` for positive and down in `colour_neg` for negative. The range is
+  // forced symmetric so the baseline sits at the band's middle. Used by the grid
+  // screen, where positive is import and negative export.
+  bool bipolar = false;
+  uint32_t colour_neg = 0;
+
   // The reduced window, cached.
   //
   // Not recomputed inside the draw callback on purpose: LVGL calls that once per
   // buffer slice the object intersects, and with a 40-line buffer a ~90 px band
   // is three slices. Reducing 1440 samples three times per redraw to draw the
   // same picture would be pure waste.
-  HistoryColumn column[MAX_COLUMNS];
+  //
+  // MAX_COLUMNS of them, allocated by chart_band_create() in PSRAM: six bands'
+  // worth was 20 KB of internal RAM as an array, which a TLS handshake needs more.
+  HistoryColumn* column = nullptr;
   size_t columns = 0;
   float drawn_min = 0.0f;
   float drawn_max = 0.0f;
@@ -72,9 +91,16 @@ struct Band {
 
   uint32_t last_minute = UINT32_MAX;  // forces the first refresh
   uint32_t last_generation = 0;
+  uint32_t last_revision = 0;
 };
 
 Band s_bands[MAX_BANDS];
+
+// Global draw pause. On a software-rotated panel a full-width band is hundreds of
+// draw_rects, and redrawing that on every frame of a tileview swipe is what makes
+// the swipe drag. Paused while a swipe is in flight (ui.cpp), the bands skip their
+// draw and the sliding frames stay light; they redraw once on release.
+bool s_paused = false;
 
 Band* band_for(lv_obj_t* obj) {
   if (obj == nullptr) {
@@ -83,12 +109,166 @@ Band* band_for(lv_obj_t* obj) {
   return static_cast<Band*>(lv_obj_get_user_data(obj));
 }
 
+// A signed series about a centre zero line: positive fills up in `colour`,
+// negative down in `colour_neg`, with a faint rule on zero. A ghosted backdrop
+// like the others, so flat intensity fills rather than the monopolar gradient,
+// and no bezel clip — the grid screen is the rectangular 2.41 panel. A column
+// whose envelope straddles zero draws both halves, so a minute that swung from
+// import to export shows as both.
+void draw_band_bipolar(lv_draw_ctx_t* ctx, Band* band, const lv_area_t& coords,
+                       lv_coord_t height) {
+  const float span = band->drawn_max - band->drawn_min;
+  const float scale = static_cast<float>(height - 1) / (span < MIN_SPAN ? MIN_SPAN : span);
+  const auto y_of = [&](float v) -> lv_coord_t {
+    lv_coord_t y = coords.y2 - static_cast<lv_coord_t>((v - band->drawn_min) * scale);
+    if (y < coords.y1) {
+      y = coords.y1;
+    }
+    if (y > coords.y2) {
+      y = coords.y2;
+    }
+    return y;
+  };
+  const lv_coord_t baseline = y_of(0.0f);
+
+  lv_draw_rect_dsc_t imp;
+  lv_draw_rect_dsc_init(&imp);
+  imp.bg_color = lv_color_hex(band->colour);
+  imp.bg_opa = band->intensity;
+  lv_draw_rect_dsc_t exp;
+  lv_draw_rect_dsc_init(&exp);
+  exp.bg_color = lv_color_hex(band->colour_neg);
+  exp.bg_opa = band->intensity;
+
+  for (size_t c = 0; c < band->columns; ++c) {
+    if (!band->column[c].known) {
+      continue;
+    }
+    const lv_coord_t x = coords.x1 + static_cast<lv_coord_t>(c) * COLUMN_PX;
+    if (x > coords.x2) {
+      break;
+    }
+    lv_area_t area;
+    area.x1 = x;
+    area.x2 = x + COLUMN_PX - 1;
+    if (area.x2 > coords.x2) {
+      area.x2 = coords.x2;
+    }
+    const float hi = band->column[c].max_value;
+    const float lo = band->column[c].min_value;
+    if (hi > 0.0f) {
+      area.y1 = y_of(hi);
+      area.y2 = baseline;
+      lv_draw_rect(ctx, &imp, &area);
+    }
+    if (lo < 0.0f) {
+      area.y1 = baseline;
+      area.y2 = y_of(lo);
+      lv_draw_rect(ctx, &exp, &area);
+    }
+  }
+
+  // The zero line, so import above and export below read against a fixed datum.
+  lv_draw_rect_dsc_t zero;
+  lv_draw_rect_dsc_init(&zero);
+  zero.bg_color = lv_color_hex(PUCK_COLOUR_MUTED);
+  zero.bg_opa = LV_OPA_40;
+  lv_area_t line;
+  line.x1 = coords.x1;
+  line.x2 = coords.x2;
+  line.y1 = baseline;
+  line.y2 = baseline;
+  lv_draw_rect(ctx, &zero, &line);
+}
+
+// The outline as one anti-aliased line through the top of each column, for
+// boards that set PUCK_CHART_SMOOTH_EDGE.
+//
+// The column path draws the outline as a 2 px block per column, bridged down to
+// the next. On a dense AMOLED that is a curve; at a larger panel's lower pixel
+// density it shows as stairs on a gentle slope and a jagged run on a steep one.
+// Here the fill under the line follows it a pixel column at a time, so the fill's
+// own corners do not poke out beside the line in steps.
+//
+// Not for a bezel-clipped band: draw_band() keeps those on the column path, which
+// is where the clipping lives. No board that wants this has a round bezel.
+void draw_band_smooth(lv_draw_ctx_t* ctx, Band* band, const lv_area_t& coords, float scale,
+                      bool ghosted, const lv_draw_rect_dsc_t& fill,
+                      const lv_draw_rect_dsc_t& spread, const lv_draw_rect_dsc_t& edge) {
+  const auto top_of = [&](size_t c) {
+    float y = static_cast<float>(coords.y2) - (band->column[c].max_value - band->drawn_min) * scale;
+    if (y < coords.y1) {
+      y = static_cast<float>(coords.y1);
+    }
+    if (y > coords.y2) {
+      y = static_cast<float>(coords.y2);
+    }
+    return y;
+  };
+
+  lv_draw_line_dsc_t line;
+  lv_draw_line_dsc_init(&line);
+  line.color = edge.bg_color;
+  line.opa = edge.bg_opa;
+  line.width = EDGE_PX;
+  // Rounded so consecutive segments meet without a notch at each column.
+  line.round_start = 1;
+  line.round_end = 1;
+
+  for (size_t c = 0; c < band->columns; ++c) {
+    if (!band->column[c].known) {
+      continue;  // a gap stays a gap
+    }
+    const lv_coord_t x = coords.x1 + static_cast<lv_coord_t>(c) * COLUMN_PX;
+    if (x > coords.x2) {
+      break;
+    }
+    // The line runs from this column's top to the next column's; a column with
+    // no known neighbour to its right gets a flat stub across its own width.
+    const float here = top_of(c);
+    const bool joined = c + 1 < band->columns && band->column[c + 1].known;
+    const float there = joined ? top_of(c + 1) : here;
+
+    // The wash, a pixel column at a time at the line's height.
+    for (lv_coord_t p = 0; p < COLUMN_PX && x + p <= coords.x2; ++p) {
+      const float y = here + (there - here) * static_cast<float>(p) / COLUMN_PX;
+      const lv_area_t area = {static_cast<lv_coord_t>(x + p), static_cast<lv_coord_t>(lroundf(y)),
+                              static_cast<lv_coord_t>(x + p), coords.y2};
+      lv_draw_rect(ctx, &fill, &area);
+    }
+
+    // The min-to-max spread, as on the column path, and likewise not on a
+    // ghosted band.
+    if (!ghosted) {
+      const float low = band->column[c].min_value - band->drawn_min;
+      lv_area_t area = {x, static_cast<lv_coord_t>(lroundf(here)),
+                        static_cast<lv_coord_t>(x + COLUMN_PX - 1),
+                        static_cast<lv_coord_t>(coords.y2 - low * scale)};
+      if (area.x2 > coords.x2) {
+        area.x2 = coords.x2;
+      }
+      if (area.y2 - area.y1 > EDGE_PX) {
+        lv_draw_rect(ctx, &spread, &area);
+      }
+    }
+
+    const lv_point_t from = {x, static_cast<lv_coord_t>(lroundf(here))};
+    const lv_point_t to = {static_cast<lv_coord_t>(joined ? x + COLUMN_PX : x + COLUMN_PX - 1),
+                           static_cast<lv_coord_t>(lroundf(there))};
+    lv_draw_line(ctx, &line, &from, &to);
+  }
+}
+
 void draw_band(lv_event_t* event) {
+  if (s_paused) {
+    return;
+  }
   lv_obj_t* obj = lv_event_get_target(event);
   Band* band = band_for(obj);
   if (band == nullptr || !band->has_data || band->columns == 0) {
     return;
   }
+  UiPerfTimer perf(UiPerfSection::ChartDraw);
 
   lv_draw_ctx_t* ctx = lv_event_get_draw_ctx(event);
   lv_area_t coords;
@@ -96,6 +276,11 @@ void draw_band(lv_event_t* event) {
 
   const lv_coord_t height = lv_area_get_height(&coords);
   if (height <= 0) {
+    return;
+  }
+
+  if (band->bipolar) {
+    draw_band_bipolar(ctx, band, coords, height);
     return;
   }
 
@@ -152,6 +337,11 @@ void draw_band(lv_event_t* event) {
   lv_draw_rect_dsc_init(&edge);
   edge.bg_color = lv_color_hex(band->colour);
   edge.bg_opa = ghosted ? lifted(static_cast<uint16_t>(band->intensity) * 2) : LV_OPA_COVER;
+
+  if (PUCK_CHART_SMOOTH_EDGE && band->clip_radius == 0) {
+    draw_band_smooth(ctx, band, coords, scale, ghosted, fill, spread, edge);
+    return;
+  }
 
   // The previous column's cap height, so the outline can be drawn as a connected
   // line; -1 whenever the run breaks, because a gap must not be spanned.
@@ -282,9 +472,13 @@ void smooth_columns(Band* band) {
   if (half < 1 || band->columns == 0) {
     return;
   }
-  // Static rather than on the stack: this runs on the UI task, one band at a
-  // time, and 208 columns is 2.5 KB that has no business on a task stack.
-  static HistoryColumn source[MAX_COLUMNS];
+  // Not on the stack: this runs on the UI task, one band at a time, and 288
+  // columns is 3.4 KB that has no business on a task stack — nor in internal RAM.
+  static HistoryColumn* const source =
+      static_cast<HistoryColumn*>(psram_alloc(MAX_COLUMNS * sizeof(HistoryColumn)));
+  if (source == nullptr) {
+    return;  // unsmoothed is still a correct curve
+  }
   for (size_t c = 0; c < band->columns; ++c) {
     source[c] = band->column[c];
   }
@@ -333,6 +527,12 @@ lv_obj_t* chart_band_create(lv_obj_t* parent, HistorySeries series, uint32_t col
   lv_obj_clear_flag(obj, LV_OBJ_FLAG_CLICKABLE);
 
   *band = Band{};
+  band->column = static_cast<HistoryColumn*>(psram_alloc(MAX_COLUMNS * sizeof(HistoryColumn)));
+  if (band->column == nullptr) {
+    LV_LOG_WARN("no memory for a chart band");
+    lv_obj_del(obj);
+    return nullptr;
+  }
   band->used = true;
   band->obj = obj;
   band->series = series;
@@ -348,6 +548,21 @@ lv_obj_t* chart_band_create(lv_obj_t* parent, HistorySeries series, uint32_t col
   return obj;
 }
 
+void chart_band_pause_all(bool paused) {
+  if (s_paused == paused) {
+    return;
+  }
+  s_paused = paused;
+  // On resume, redraw every band once — the sliding frames drew nothing.
+  if (!paused) {
+    for (size_t i = 0; i < MAX_BANDS; ++i) {
+      if (s_bands[i].used && s_bands[i].obj != nullptr) {
+        lv_obj_invalidate(s_bands[i].obj);
+      }
+    }
+  }
+}
+
 void chart_band_set_range(lv_obj_t* obj, float min_value, float max_value) {
   Band* band = band_for(obj);
   if (band == nullptr) {
@@ -357,6 +572,48 @@ void chart_band_set_range(lv_obj_t* obj, float min_value, float max_value) {
   band->range_min = min_value;
   band->range_max = max_value;
   band->last_minute = UINT32_MAX;  // the picture changes even if the data has not
+}
+
+void chart_band_set_columns(lv_obj_t* obj, const HistoryColumn* cols, size_t n,
+                            float drawn_min, float drawn_max) {
+  Band* band = band_for(obj);
+  if (band == nullptr) {
+    return;
+  }
+  // Externally-supplied columns, for a curve that does not live in the history
+  // ring — the solar forecast, whose future half the ring cannot hold. The band
+  // is never chart_band_refresh()ed; the screen feeds it this and it draws it.
+  if (n > MAX_COLUMNS) {
+    n = MAX_COLUMNS;
+  }
+  for (size_t i = 0; i < n; ++i) {
+    band->column[i] = cols[i];
+  }
+  band->columns = n;
+  band->has_data = n > 0;
+  band->drawn_min = drawn_min;
+  band->drawn_max = (drawn_max - drawn_min < MIN_SPAN) ? drawn_min + MIN_SPAN : drawn_max;
+  lv_obj_invalidate(obj);
+}
+
+void chart_band_clear(lv_obj_t* obj) {
+  Band* band = band_for(obj);
+  if (band == nullptr) {
+    return;
+  }
+  band->has_data = false;
+  band->columns = 0;
+  lv_obj_invalidate(obj);
+}
+
+size_t chart_band_column_count(lv_obj_t* obj) {
+  if (obj == nullptr) {
+    return 0;
+  }
+  lv_obj_update_layout(obj);
+  const lv_coord_t width = lv_obj_get_width(obj);
+  const size_t n = width > 0 ? static_cast<size_t>(width / COLUMN_PX) : 0;
+  return n > MAX_COLUMNS ? MAX_COLUMNS : n;
 }
 
 
@@ -392,23 +649,36 @@ void chart_band_set_intensity(lv_obj_t* obj, lv_opa_t intensity) {
   lv_obj_invalidate(obj);
 }
 
+void chart_band_set_bipolar(lv_obj_t* obj, bool on, uint32_t colour_neg) {
+  Band* band = band_for(obj);
+  if (band == nullptr) {
+    return;
+  }
+  band->bipolar = on;
+  band->colour_neg = colour_neg;
+  band->last_minute = UINT32_MAX;  // the scale becomes symmetric; re-reduce
+  lv_obj_invalidate(obj);
+}
+
 void chart_band_refresh(lv_obj_t* obj) {
   Band* band = band_for(obj);
   if (band == nullptr) {
     return;
   }
+  UiPerfTimer perf(UiPerfSection::ChartRefresh);
 
   // Whichever day is on screen. A band does not choose: stepping back a day
   // moves every chart at once, so the choice belongs to the view, not to the
-  // band. The generation check catches the switch even when the two days happen
-  // to share a head minute.
+  // band. Generation catches bank resets/switches even when two days share a
+  // head minute; revision catches Recorder writes behind an unchanged head.
   const HistoryBank bank = history_view();
   const uint32_t head = history_head_minute(bank);
   const uint32_t generation = history_generation(bank) ^ (static_cast<uint32_t>(bank) << 24);
-  if (head == band->last_minute && generation == band->last_generation) {
+  const uint32_t revision = history_revision(bank);
+  if (head == band->last_minute && generation == band->last_generation &&
+      revision == band->last_revision) {
     return;
   }
-  band->last_generation = generation;
 
   uint32_t from = 0;
   uint32_t to = 0;
@@ -416,6 +686,8 @@ void chart_band_refresh(lv_obj_t* obj) {
     // Nothing recorded yet. Draw nothing at all rather than a flat line along
     // the bottom, which would read as a real day of zero generation.
     band->last_minute = head;
+    band->last_generation = generation;
+    band->last_revision = revision;
     band->has_data = false;
     band->columns = 0;
     lv_obj_invalidate(obj);
@@ -434,11 +706,15 @@ void chart_band_refresh(lv_obj_t* obj) {
     band->has_data = false;
     return;  // deliberately without recording last_minute, so this is retried
   }
-  band->last_minute = head;
-
-  history_reduce(bank, band->series, from, to, band->column, columns);
+  {
+    UiPerfTimer reduce_perf(UiPerfSection::HistoryReduce);
+    history_reduce(bank, band->series, from, to, band->column, columns);
+  }
   band->columns = columns;
-  smooth_columns(band);
+  {
+    UiPerfTimer smooth_perf(UiPerfSection::SmoothColumns);
+    smooth_columns(band);
+  }
 
   float lowest = 0.0f;
   float highest = 0.0f;
@@ -461,8 +737,23 @@ void chart_band_refresh(lv_obj_t* obj) {
     }
   }
   band->has_data = any;
+  // Do not mark the revision handled until a usable reduction has completed.
+  // A Recorder write behind `head` can otherwise be consumed by the cache key
+  // without its samples ever reaching the columns.
+  band->last_minute = head;
+  band->last_generation = generation;
+  band->last_revision = revision;
 
-  if (band->autoscale) {
+  if (band->bipolar) {
+    // Symmetric about zero, so the baseline is the band's centre and a kW of
+    // import stands as tall above it as a kW of export hangs below.
+    float m = highest > 0.0f ? highest : 0.0f;
+    if (-lowest > m) {
+      m = -lowest;
+    }
+    band->drawn_min = -m;
+    band->drawn_max = m;
+  } else if (band->autoscale) {
     // Anchored at zero for a series that never goes negative, so the height of
     // the curve stays proportional to the reading rather than to its spread —
     // a quiet day should look quiet, not be stretched to fill the band.

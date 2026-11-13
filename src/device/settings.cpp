@@ -3,6 +3,8 @@
 #include <Preferences.h>
 #include <math.h>
 
+#include "ui/ui.h"  // PUCK_SCREEN_COUNT, for the screen-mask migration
+
 namespace {
 
 // Named for this project, like everything else (see the provenance rule in
@@ -11,6 +13,9 @@ constexpr const char* NAMESPACE = "sigenstorpuck";
 
 constexpr const char* KEY_BASE_URL = "base_url";
 constexpr const char* KEY_TOKEN = "token";
+constexpr const char* KEY_HA_URL = "ha_url";
+constexpr const char* KEY_HA_TOKEN = "ha_token";
+constexpr const char* KEY_HA_SOLAR_SOURCE = "ha_sol_src";
 constexpr const char* KEY_POLL = "poll_s";
 constexpr const char* KEY_BRIGHTNESS = "bright";
 constexpr const char* KEY_DIM = "dim_s";
@@ -22,6 +27,12 @@ constexpr const char* KEY_SWEEP = "sweep_min";
 constexpr const char* KEY_ROT_ON = "rotate_on";
 constexpr const char* KEY_SCR_VIS = "scr_vis";
 constexpr const char* KEY_SCR_ROT = "scr_rot";
+// How many screen ids existed when the two masks above were written. A screen
+// added since has its bit stored as 0 — "off" by accident, not by choice — so
+// on load those bits are switched on. Absent means the masks were written by
+// firmware with 7 screens (up to and including Load), before this key existed.
+constexpr const char* KEY_SCR_KNOWN = "scr_known";
+constexpr uint8_t SCREENS_BEFORE_KNOWN_KEY = 7;
 constexpr const char* KEY_UPDATES = "updates";
 constexpr const char* KEY_SOURCE = "source";
 constexpr const char* KEY_HOSTNAME = "hostname";
@@ -65,6 +76,21 @@ void settings_begin() {
   }
   s_settings.base_url = prefs.getString(KEY_BASE_URL, "");
   s_settings.token = prefs.getString(KEY_TOKEN, "");
+  if (prefs.isKey(KEY_HA_URL)) {
+    s_settings.ha_base_url = prefs.getString(KEY_HA_URL, "");
+  }
+  if (prefs.isKey(KEY_HA_TOKEN)) {
+    s_settings.ha_token = prefs.getString(KEY_HA_TOKEN, "");
+  }
+  for (size_t i = 0; i < HA_ENTITY_COUNT; ++i) {
+    if (prefs.isKey(HA_ENTITIES[i].nvs_key)) {
+      s_settings.ha_entities[i] = prefs.getString(HA_ENTITIES[i].nvs_key, "");
+    }
+  }
+  if (prefs.isKey(KEY_HA_SOLAR_SOURCE)) {
+    s_settings.ha_solar_forecast_source =
+        solar_forecast_source_from_stored(prefs.getUChar(KEY_HA_SOLAR_SOURCE, 0));
+  }
   s_settings.poll_interval_s = prefs.getUInt(KEY_POLL, s_settings.poll_interval_s);
   s_settings.brightness = prefs.getUChar(KEY_BRIGHTNESS, s_settings.brightness);
   s_settings.dim_after_s = prefs.getUInt(KEY_DIM, s_settings.dim_after_s);
@@ -74,8 +100,16 @@ void settings_begin() {
   s_settings.rotate_s = prefs.getUInt(KEY_ROTATE, s_settings.rotate_s);
   s_settings.sweep_min = prefs.getUInt(KEY_SWEEP, s_settings.sweep_min);
   s_settings.rotate_enabled = prefs.getBool(KEY_ROT_ON, s_settings.rotate_enabled);
-  s_settings.screens_visible = prefs.getUChar(KEY_SCR_VIS, s_settings.screens_visible);
-  s_settings.screens_rotate = prefs.getUChar(KEY_SCR_ROT, s_settings.screens_rotate);
+  s_settings.screens_visible = prefs.getUShort(KEY_SCR_VIS, s_settings.screens_visible);
+  s_settings.screens_rotate = prefs.getUShort(KEY_SCR_ROT, s_settings.screens_rotate);
+  if (prefs.isKey(KEY_SCR_VIS)) {
+    // Screens newer than the stored masks start on, like on a fresh device.
+    const uint8_t known = prefs.getUChar(KEY_SCR_KNOWN, SCREENS_BEFORE_KNOWN_KEY);
+    for (uint8_t i = known; i < PUCK_SCREEN_COUNT; ++i) {
+      s_settings.screens_visible |= static_cast<uint16_t>(1u << i);
+      s_settings.screens_rotate |= static_cast<uint16_t>(1u << i);
+    }
+  }
   s_settings.check_updates = prefs.getBool(KEY_UPDATES, s_settings.check_updates);
 
   // Absent means the device predates this key, not that it wants the default.
@@ -85,12 +119,10 @@ void settings_begin() {
   // token but was never asked to choose. Reading the default over the top of that
   // would switch a working display to a plant it has no address for. What it has
   // stored is the better evidence of what it was set up as.
-  if (prefs.isKey(KEY_SOURCE)) {
-    s_settings.source =
-        prefs.getUChar(KEY_SOURCE, 0) == 1 ? DataSource::Modbus : DataSource::Server;
-  } else if (!s_settings.base_url.isEmpty() && !s_settings.token.isEmpty()) {
-    s_settings.source = DataSource::Server;
-  }
+  const bool has_source = prefs.isKey(KEY_SOURCE);
+  s_settings.source = data_source_restore(
+      has_source, has_source ? prefs.getUChar(KEY_SOURCE, 0) : 0,
+      !s_settings.base_url.isEmpty() && !s_settings.token.isEmpty());
   if (prefs.isKey(KEY_HOSTNAME)) {
     const String stored = prefs.getString(KEY_HOSTNAME, "");
     if (!stored.isEmpty()) {
@@ -134,10 +166,23 @@ void settings_begin() {
                   s_settings.modbus_host.isEmpty() ? "(unset)" : s_settings.modbus_host.c_str(),
                   s_settings.modbus_port, s_settings.modbus_plant_address,
                   s_settings.poll_interval_s);
-  } else {
+  } else if (s_settings.source == DataSource::Server) {
     Serial.printf("[settings] source=server server=%s token=%s poll=%us\n",
                   s_settings.base_url.isEmpty() ? "(unset)" : s_settings.base_url.c_str(),
                   s_settings.token.isEmpty() ? "(unset)" : settings_token_masked().c_str(),
+                  s_settings.poll_interval_s);
+  } else {
+    Serial.printf("[settings] source=home assistant server=%s token=%s mappings=%u "
+                  "forecast=%s poll=%us\n",
+                  s_settings.ha_base_url.isEmpty() ? "(unset)" : s_settings.ha_base_url.c_str(),
+                  s_settings.ha_token.isEmpty() ? "(unset)" : "stored",
+                  static_cast<unsigned>([]() {
+                    size_t count = 0;
+                    for (const String& entity : s_settings.ha_entities) {
+                      count += entity.isEmpty() ? 0 : 1;
+                    }
+                    return count;
+                  }()), solar_forecast_source_name(s_settings.ha_solar_forecast_source),
                   s_settings.poll_interval_s);
   }
 }
@@ -164,6 +209,73 @@ bool settings_set_server(const String& base_url, const String& token) {
   Serial.printf("[settings] server set to %s (token %s)\n", base_url.c_str(),
                 settings_token_masked().c_str());
   return true;
+}
+
+bool settings_set_home_assistant(const String& base_url, const String& token,
+                                 const String* entities, size_t count,
+                                 SolarForecastSource forecast_source) {
+  if (base_url.isEmpty() || entities == nullptr || count != HA_ENTITY_COUNT) {
+    return false;
+  }
+  for (size_t i = 0; i < count; ++i) {
+    if (!entities[i].isEmpty() && !ha_entity_id_valid(entities[i].c_str())) {
+      return false;
+    }
+  }
+
+  Preferences prefs;
+  if (!prefs.begin(NAMESPACE, /*readOnly=*/false)) {
+    return false;
+  }
+  bool ok = prefs.putString(KEY_HA_URL, base_url) > 0;
+  if (!token.isEmpty()) {
+    ok = prefs.putString(KEY_HA_TOKEN, token) > 0 && ok;
+  }
+  ok = prefs.putUChar(KEY_HA_SOLAR_SOURCE, static_cast<uint8_t>(forecast_source)) > 0 && ok;
+  for (size_t i = 0; i < count; ++i) {
+    if (entities[i].isEmpty()) {
+      if (prefs.isKey(HA_ENTITIES[i].nvs_key)) {
+        ok = prefs.remove(HA_ENTITIES[i].nvs_key) && ok;
+      }
+    } else {
+      ok = prefs.putString(HA_ENTITIES[i].nvs_key, entities[i]) > 0 && ok;
+    }
+  }
+  prefs.end();
+  if (!ok) {
+    return false;
+  }
+
+  s_settings.ha_base_url = base_url;
+  if (!token.isEmpty()) {
+    s_settings.ha_token = token;
+  }
+  for (size_t i = 0; i < count; ++i) {
+    s_settings.ha_entities[i] = entities[i];
+  }
+  s_settings.ha_solar_forecast_source = forecast_source;
+  size_t mapped = 0;
+  for (const String& entity : s_settings.ha_entities) {
+    mapped += entity.isEmpty() ? 0 : 1;
+  }
+  Serial.printf("[settings] home assistant set to %s (token stored, %u mappings, forecast %s)\n",
+                base_url.c_str(), static_cast<unsigned>(mapped),
+                solar_forecast_source_name(forecast_source));
+  return true;
+}
+
+bool settings_home_assistant_is_configured() {
+  if (s_settings.ha_base_url.isEmpty() || s_settings.ha_token.isEmpty()) {
+    return false;
+  }
+  // Forecast entities cannot provision the main data source by themselves. At
+  // least one live/battery/daily mapping must still produce the HA Snapshot.
+  for (size_t i = 0; i < HA_FORECAST_ENTITY_FIRST; ++i) {
+    if (!s_settings.ha_entities[i].isEmpty()) {
+      return true;
+    }
+  }
+  return false;
 }
 
 bool settings_set_display(uint8_t brightness, uint32_t dim_after_s, uint8_t dim_brightness) {
@@ -230,7 +342,7 @@ bool settings_set_source(DataSource source) {
   prefs.end();
   s_settings.source = source;
   Serial.printf("[settings] source set to %s (applies on next boot)\n",
-                source == DataSource::Modbus ? "modbus" : "server");
+                data_source_name(source));
   return true;
 }
 
@@ -395,6 +507,9 @@ bool settings_is_provisioned() {
     // address alone.
     return !s_settings.modbus_host.isEmpty();
   }
+  if (s_settings.source == DataSource::HomeAssistant) {
+    return settings_home_assistant_is_configured();
+  }
   return !s_settings.base_url.isEmpty() && !s_settings.token.isEmpty();
 }
 
@@ -409,6 +524,17 @@ String settings_token_masked() {
   return String("...") + s_settings.token.substring(length - 4);
 }
 
+String settings_ha_token_masked() {
+  const size_t length = s_settings.ha_token.length();
+  if (length == 0) {
+    return String("(unset)");
+  }
+  if (length <= 4) {
+    return String("****");
+  }
+  return String("...") + s_settings.ha_token.substring(length - 4);
+}
+
 void settings_forget_server() {
   Preferences prefs;
   if (prefs.begin(NAMESPACE, /*readOnly=*/false)) {
@@ -419,6 +545,16 @@ void settings_forget_server() {
   s_settings.base_url = "";
   s_settings.token = "";
   Serial.println("[settings] server details cleared");
+}
+
+void settings_forget_home_assistant() {
+  Preferences prefs;
+  if (prefs.begin(NAMESPACE, /*readOnly=*/false)) {
+    prefs.remove(KEY_HA_TOKEN);
+    prefs.end();
+  }
+  s_settings.ha_token = "";
+  Serial.println("[settings] Home Assistant token cleared");
 }
 
 bool settings_set_orientation(uint8_t quarter_turns) {
@@ -456,13 +592,14 @@ bool settings_set_rotate_enabled(bool enabled) {
   return true;
 }
 
-bool settings_set_screens(uint8_t visible, uint8_t rotate) {
+bool settings_set_screens(uint16_t visible, uint16_t rotate) {
   Preferences prefs;
   if (!prefs.begin(NAMESPACE, /*readOnly=*/false)) {
     return false;
   }
-  prefs.putUChar(KEY_SCR_VIS, visible);
-  prefs.putUChar(KEY_SCR_ROT, rotate);
+  prefs.putUShort(KEY_SCR_VIS, visible);
+  prefs.putUShort(KEY_SCR_ROT, rotate);
+  prefs.putUChar(KEY_SCR_KNOWN, PUCK_SCREEN_COUNT);
   prefs.end();
   s_settings.screens_visible = visible;
   s_settings.screens_rotate = rotate;

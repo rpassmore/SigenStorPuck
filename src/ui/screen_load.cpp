@@ -21,7 +21,7 @@ UiScreenHeader s_header;
 UiMetricPill s_pill;
 UiStatGrid2x2 s_stats;
 bool s_live = true;
-bool s_with_server = true;
+bool s_with_breakdown = true;
 
 // The four figures all come from the day's flow split, which only a server has.
 void set_figure(lv_obj_t* label, bool known, float kwh) {
@@ -36,8 +36,8 @@ void set_figure(lv_obj_t* label, bool known, float kwh) {
 
 }  // namespace
 
-lv_obj_t* screen_load_create(lv_obj_t* parent, bool with_server) {
-  s_with_server = with_server;
+lv_obj_t* screen_load_create(lv_obj_t* parent, bool with_breakdown) {
+  s_with_breakdown = with_breakdown;
   s_root = puck_create_screen_root(parent);
 
   // Autoscaled load curve; ghost 80 (since PUCK_COLOUR_HOME is nearly white), smoothing 15
@@ -51,7 +51,8 @@ lv_obj_t* screen_load_create(lv_obj_t* parent, bool with_server) {
 
   s_pill.create(s_root, PUCK_COLOUR_HOME, -26);
 
-  if (!s_with_server) {
+  if (!s_with_breakdown) {
+    // Nothing further to build: see the note on screen_load_create.
     return s_root;
   }
 
@@ -101,10 +102,12 @@ void screen_load_update(const Snapshot& snapshot) {
     s_pill.set_text(text);
   }
 
-  if (!s_with_server) {
-    return;
+  if (!s_with_breakdown) {
+    return;  // the four figures were never built
   }
 
+  // The four figures come out of the day's flow split, which requires detail:
+  // plant's daily counters cannot say which source served the load.
   const bool split = have && f.solar_load.known;
   const float ev_day = (f.solar_ev.known ? f.solar_ev.value : 0.0f) +
                        (f.batt_ev.known ? f.batt_ev.value : 0.0f) +

@@ -7,6 +7,7 @@
 #include <time.h>
 
 #include "board_config.h"
+#include "forecast_store.h"
 #include "settings.h"
 #include "solar_forecast.h"
 
@@ -63,7 +64,8 @@ FetchResult s_last_result = FetchResult::NotConfigured;
 // half-configured array, it is an empty slot.
 bool site_from_settings(SolarSite* out) {
   const Settings& settings = settings_get();
-  if (!settings.solar_location_set) {
+  if (!solar_site_configured(settings.solar_location_set, settings.solar_arrays,
+                             SOLAR_MAX_ARRAYS)) {
     return false;
   }
   out->latitude = settings.latitude;
@@ -76,7 +78,7 @@ bool site_from_settings(SolarSite* out) {
       out->array[out->array_count++] = settings.solar_arrays[i];
     }
   }
-  return out->array_count > 0;
+  return true;
 }
 
 bool same_site(const SolarSite& a, const SolarSite& b) {
@@ -109,6 +111,16 @@ void recompute(const SolarSite& site) {
   solar_forecast_day(site, s_day_start, s_hours, s_hour_count, s_day_start, s_slot_kwh);
   s_computed_for = site;
   s_have_forecast = true;
+
+  // The whole-day curve for the solar screen's "forecast ahead", as average kW
+  // per slot. s_day_start is local-midnight epoch seconds; the store indexes in
+  // unix-minutes like history.
+  float slot_kw[SOLAR_SLOTS_PER_DAY];
+  const float hours = static_cast<float>(SOLAR_SLOT_MINUTES) / 60.0f;
+  for (size_t i = 0; i < SOLAR_SLOTS_PER_DAY; ++i) {
+    slot_kw[i] = s_slot_kwh[i] / hours;
+  }
+  forecast_store_set(slot_kw, SOLAR_SLOTS_PER_DAY, s_day_start / 60);
 
   const SolarSummary summary =
       solar_summarise(s_slot_kwh, s_day_start, static_cast<uint32_t>(time(nullptr)));
@@ -231,6 +243,17 @@ FetchResult solar_api_service() {
   // recently it was fetched. Without this, a device left running would show
   // yesterday's curve well into the morning.
   const bool rolled = s_have_weather && now_s >= s_day_start + 86400;
+  if (rolled) {
+    // Drop it before trying to replace it, rather than after succeeding. The
+    // fetch below can fail, and midnight is precisely when nobody is watching to
+    // notice — so keeping yesterday's figures until a retry happens to work puts
+    // yesterday's forecast under today's date, with "remaining" reading zero
+    // because every slot is in the past, and vs-forecast measuring this morning's
+    // generation against the whole of yesterday. Four dashes is the honest answer
+    // to "what is today's forecast" before today's has arrived.
+    s_have_weather = false;
+    s_have_forecast = false;
+  }
   const bool moved = s_have_forecast && !same_place(site, s_computed_for);
   const bool stale = s_last_attempt_ms == 0 || now_ms - s_last_attempt_ms >= REFRESH_MS;
   // A fetch that failed waits its full retry regardless of what prompted the next
@@ -263,7 +286,13 @@ void solar_api_apply(Snapshot* snapshot) {
   if (snapshot == nullptr || !snapshot->valid) {
     return;
   }
-  if (!s_have_forecast) {
+  // The day check is repeated here rather than left to solar_api_service(),
+  // because this runs first in the poll loop: on the first cycle after midnight
+  // the service call has not yet had its chance to notice, and one poll of
+  // yesterday's forecast is still a wrong figure on the glass.
+  const uint32_t now = static_cast<uint32_t>(time(nullptr));
+  const bool expired = s_day_start != 0 && now >= s_day_start + 86400;
+  if (!s_have_forecast || expired) {
     // Configured but nothing fetched yet reports `configured` with nulls, the
     // same shape the server sends when Open-Meteo is unreachable: the screen then
     // says "no forecast yet" rather than "no PV system".
@@ -271,28 +300,8 @@ void solar_api_apply(Snapshot* snapshot) {
     return;
   }
 
-  // Ahead of the forecast block: a chart anchored to the wrong midnight is the
-  // more visible of the two errors this fetch prevents.
-  snapshot->tz_offset_min.known = true;
-  snapshot->tz_offset_min.value = s_utc_offset_min;
-
-  const SolarSummary summary =
-      solar_summarise(s_slot_kwh, s_day_start, static_cast<uint32_t>(time(nullptr)));
-
-  snapshot->solar.configured = true;
-  snapshot->solar.forecast_kwh = {true, summary.forecast_kwh};
-  snapshot->solar.remaining_kwh = {true, summary.remaining_kwh};
-  snapshot->solar.peak_kw = {true, summary.peak_kw};
-
-  // Actual against what the forecast said should have arrived by now. The floor
-  // is the server's own: before dawn the denominator is a rounding error and the
-  // ratio swings between nothing and thousands of per cent.
-  const float so_far = summary.forecast_kwh - summary.remaining_kwh;
-  if (snapshot->today.present && snapshot->today.solar.known && so_far > 0.05f) {
-    snapshot->solar.vs_forecast_pct = {true, snapshot->today.solar.value / so_far * 100.0f};
-  } else {
-    snapshot->solar.vs_forecast_pct = {};
-  }
+  const SolarSummary summary = solar_summarise(s_slot_kwh, s_day_start, now);
+  solar_summary_apply(summary, s_utc_offset_min, snapshot);
 }
 
 bool solar_api_ready() {

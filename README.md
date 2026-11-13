@@ -11,14 +11,15 @@ forecast, consumption, where the day's energy went, and what it all cost.
 
 <img src="docs/img/image-1.jpg" width="300" alt="Power flow">  <img src="docs/img/image-2.jpg" width="300" alt="Power flow">
 
-## Two ways to get data — read this first
 
-The Puck can take its readings from either of two places, and it matters which, because
+## Three ways to get data — read this first
+
+The Puck can take its readings from one of three places, and it matters which, because
 some screens and features need one of them.
 
 **Modbus TCP — talking straight to your plant.** No other software involved. The Puck
-reads your inverter or gateway directly over your own network. **This is the only way to
-use the Puck today**, and everything below assumes it unless it says otherwise.
+reads your inverter or gateway directly over your own network. This remains the default
+for a new installation.
 
 **SigenStorDisplay Server.** A separate companion application that manages and logs a
 Sigenergy plant, which the Puck can then read from. It unlocks the Flows and Cost
@@ -26,26 +27,33 @@ screens, stepping back through past days, and complete daily charts.
 **SigenStorDisplay has not been released yet.** The Puck already has full support for it
 built in and ready for when it is, but until then those parts are unavailable.
 
+**Home Assistant.** The Puck reads mapped entities through Home Assistant's REST API.
+This is useful when Home Assistant is already the single collector for the inverter,
+battery and meters: the Puck consumes that normalized home-energy environment without
+becoming another direct Modbus client. The mappings are semantic and fully editable, so
+this works with different inverter and battery integrations, not only Sigenergy. No
+entity IDs are assumed.
+
 ### What works with which
 
-| | Modbus (available now) | SigenStorDisplay Server |
-|---|:--:|:--:|
-| **Power** screen | ● | ● |
-| **Battery** screen | ● | ● |
-| **Solar** screen | ● | ● |
-| **Load** screen | ◐ headline and live draw only | ● |
-| **Flows** screen | — | ● |
-| **Cost** screen | — | ● |
-| **Settings** screen | ● | ● |
-| Solar forecast | ● calculated on the Puck | ● from the server |
-| Daily charts | ◐ from when the Puck was switched on | ● the whole day, and after a restart |
-| Step back through past days | — | ● up to 7 days |
-| Tariff rates and savings | — | ● |
+| | Modbus | SigenStorDisplay Server | Home Assistant |
+|---|:--:|:--:|:--:|
+| **Power** screen | ● | ● | ● |
+| **Battery** screen | ● | ● | ● |
+| **Solar** screen | ● | ● | ◐ by default; ● with forecast configured |
+| **Load** screen | ◐ headline and live draw only | ● | ◐ headline and live draw only |
+| **Flows** screen | — | ● | — |
+| **Cost** screen | — | ● | — |
+| **Settings** screen | ● | ● | ● |
+| Solar forecast | ● calculated on the Puck | ● from the server | ● disabled, Puck, or HA entities |
+| Today's charts | ◐ from when the Puck was switched on | ● the whole day, and after a restart | ◐ restored from HA Recorder when available; otherwise from boot |
+| Step back through past days | — | ● up to 7 days | — |
+| Tariff rates and savings | — | ● | — |
 
 ● full · ◐ partial · — not available
 
-On Modbus the Flows and Cost screens are removed altogether rather than left showing
-dashes, so you get five screens instead of seven.
+On Modbus and Home Assistant the Flows and Cost screens are removed altogether rather
+than left showing dashes, so you get five screens instead of seven.
 
 ## The screens
 
@@ -68,8 +76,12 @@ Which screens appear at all is up to you — see **Screens** under Settings.
 | **Tariff** — Import and Export tariff rates pulled from Octopus Energy for the users slected tariff in the settings page. Import and Export rates are graphed in half hour slots for the whole day.<br><br>*Works on both.* | **Settings** — always the last screen. Scan the code with your phone, or type either address into a browser, to reach the settings page.<br><br>*Works on both.* | |
 
 Behind the solar, load and battery screens is that day's own curve, drawn faintly so it
-does not compete with the figures. On Modbus the curve builds up from the moment the Puck
-is switched on, so it starts empty after a restart and fills through the day. With a
+does not compete with the figures. In Home Assistant mode the Puck starts one optional,
+entity-filtered Recorder backfill after its first successful live poll. It restores today's
+available PV, battery and load curves in bounded two-hour windows, with a normal live poll
+between windows. If Recorder is disabled, unavailable, excludes an entity or has no
+history, the live readings continue normally and the affected curves simply fill from
+boot. Modbus curves always fill from boot. With a
 **SigenStorDisplay Server** the whole day is fetched, so the curve is complete straight
 away.
 
@@ -80,12 +92,20 @@ away.
 | **PWR** | Back one day | Auto-cycle on/off | Power off |
 | **BOOT** | Forward one day | Next screen | Restart |
 
-The day buttons are **SigenStorDisplay Server Only** — on Modbus there is no stored
-history to step back into, and the buttons say `LIVE ONLY` instead. With a server you can
+The day buttons are **SigenStorDisplay Server Only** — on Modbus and Home Assistant there
+is no stored history to step back into, and the buttons say `LIVE ONLY` instead. With a server you can
 step back seven days; the Power screen always stays live, and the day you are looking at
-is named just above the page dots.
+is named just above the page dots. Left alone for two minutes, it goes back to today
+by itself.
 
 If the screen is off on a schedule, the first press of any button just wakes it up.
+
+On the **2.41″ landscape** board the buttons do the same, with one difference in what
+"power off" means. That board has no power-management chip; its PWR button is a
+battery switch. On battery, holding PWR for 5 seconds really does switch it off, and a
+press switches it back on. On USB there is nothing to switch off, so it turns the screen
+off and sleeps instead, and a press of PWR wakes it. (The third button, RST, is a
+hardware reset.)
 
 ## Installing
 
@@ -98,7 +118,13 @@ Plug the Puck into a computer with a USB-C cable and open this page in **Chrome 
 It flashes over WebSerial — nothing to download and no drivers to install. Safari and
 Firefox cannot do this, and neither can anything on an iPhone or iPad.
 
-After the first flash the Puck updates itself — see **Firmware** below.
+The installer asks which board you have — the **1.75″ round** or the **2.41″ landscape** —
+and each flashes its own build. **The 2.41 is early-release testing** (V1 revision only —
+the later V2 wires the board differently and is not currently supported); the 1.75 is the
+primary board.
+
+After the first flash the Puck updates itself — each board from its own build — see
+**Firmware** below.
 
 ### 2. Join it to your WiFi
 
@@ -130,7 +156,9 @@ network. The code carries the IP, being the one that always works.
 http://sigenstorpuck.local/
 ```
 
-### 4. Point it at your plant
+### 4. Choose and configure a data source
+
+#### Direct Modbus
 
 1. Check **Data source** is set to **Plant over Modbus**. It is out of the box.
 2. Under **Plant (Modbus)**, enter the IP address of your inverter or gateway. Leave the
@@ -148,10 +176,47 @@ Two things to do outside the Puck, or it will not be able to connect:
 
 Data should appear within a few seconds of the restart.
 
-> **Using a SigenStorDisplay Server instead**, once it is available: set **Data source**
-> to *Server*, then paste the enrolment URL from the server's **Admin → Kiosk devices**
-> page into the **Server** section and save. The URL carries the server address and the
-> access token together, so that is the only thing you need to enter.
+#### SigenStorDisplay Server
+
+Once it is available, set **Data source** to *SigenStor Display server*, then paste the
+enrolment URL from the server's **Admin → Kiosk devices** page into the **Server** section
+and save. The URL carries the server address and access token together.
+
+#### Home Assistant
+
+Prerequisites are a reachable Home Assistant instance, energy entities from any
+integration, and a long-lived access token. In Home Assistant, create a dedicated local
+non-administrator user for the Puck; sign in as that user, open the user profile, and
+create a [**Long-lived access token**](https://developers.home-assistant.io/docs/auth_api/#long-lived-access-token).
+Avoid using an administrator's everyday token. Revoking this token later immediately
+removes the Puck's access.
+
+1. Set **Data source** to **Home Assistant**.
+2. Under **Home Assistant**, enter the base URL the Puck can reach, including the scheme
+   and port where needed, such as `http://homeassistant.local:8123`.
+3. Paste the long-lived access token. It is stored in the Puck's NVS, never compiled into
+   firmware, and the settings page will only show a masked suffix after saving.
+4. Map the entity IDs your installation provides. Grey Sigenergy entity IDs shown in the
+   fields are example placeholders only: they are not configured or saved unless typed,
+   and other Home Assistant integrations should use their own entity IDs.
+5. Optionally, choose whether solar forecasting is disabled, calculated on the Puck, or
+   read from semantic Home Assistant entities. The default is disabled, preserving
+   existing HA behaviour.
+6. Save, use **Test Home Assistant connection**, then restart the Puck.
+
+The Puck sends one [`POST /api/template`](https://developers.home-assistant.io/docs/api/rest/#post-apitemplate)
+per live poll. Home Assistant renders only the
+configured entities and their units into a compact response; the Puck does not fetch
+entities one at a time or download all HA states. In this mode the Puck never opens a
+Modbus connection.
+
+After the first successful live poll following a boot, the Puck also reads filtered Home
+Assistant Recorder history for the mapped entities needed by today's Solar, Battery and
+Load curves. Consecutive two-hour requests keep each response bounded, and only one window
+runs between live polls. Recorder is optional: an empty, excluded or unavailable entity
+leaves a gap, and a failed window never invalidates live data or discards completed
+windows. Transient failures are retried twice for the current window; malformed responses
+stop the backfill. No previous day is downloaded or made browseable.
 
 ## Settings
 
@@ -169,8 +234,9 @@ Most changes take effect straight away; the ones needing a restart are marked �
 
 <table>
 <tr><th width="32%">Option</th><th>What it does</th></tr>
-<tr><td><strong>SigenStor Display server</strong> ↻</td><td>Read from a <strong>SigenStorDisplay Server</strong>. Not yet available.</td></tr>
 <tr><td><strong>Plant over Modbus (LAN only)</strong> ↻</td><td><strong>The default.</strong> Read your inverter or gateway directly. Removes the Flows and Cost screens, which need data only a server has.</td></tr>
+<tr><td><strong>SigenStor Display server</strong> ↻</td><td>Read from a <strong>SigenStorDisplay Server</strong>. Not yet available.</td></tr>
+<tr><td><strong>Home Assistant</strong> ↻</td><td>Read generic, explicitly mapped energy entities through Home Assistant's REST API. The Puck does not contact the plant over Modbus in this mode.</td></tr>
 </table>
 
 ### Plant (Modbus)
@@ -189,18 +255,66 @@ Most changes take effect straight away; the ones needing a restart are marked �
 
 ### Server
 
-**SigenStorDisplay Server Only** — nothing here has any effect on the Modbus source.
+**SigenStorDisplay Server Only** — nothing here affects the Home Assistant or Modbus source.
 
 <table>
 <tr><th width="32%">Option</th><th>What it does</th></tr>
 <tr><td><strong>Enrolment URL</strong></td><td>Paste the whole URL from the server's Admin → Kiosk devices page. It fills in the server address and access token together. The page shows the last four characters of the stored token so you can tell one device's enrolment from another's.</td></tr>
-<tr><td><strong>Test connection</strong></td><td>Fetches data once and reports exactly what happened — the quickest way to find a wrong address or a revoked token.</td></tr>
+<tr><td><strong>Test server connection</strong></td><td>Fetches data once and reports exactly what happened — the quickest way to find a wrong address or a revoked token.</td></tr>
 </table>
+
+### Home Assistant
+
+The URL, token, and at least one mapping are required to start polling. No single entity
+mapping is universal across HA integrations, so mappings are individually optional; for
+a useful power diagram, configure PV, grid, and battery power, plus home/load power if HA
+provides it. SOC and today's totals enable their corresponding figures.
+
+| Mapping | Canonical meaning and sign |
+|---|---|
+| PV power | Solar generation, positive, in W or kW |
+| Grid power | Positive importing, negative exporting, in W or kW |
+| Battery power | Positive charging, negative discharging, in W or kW |
+| Home/load power | Positive consumption, in W or kW; preferred over derivation |
+| EV power | Positive charging draw, in W or kW |
+| Plant/system power | Integration's total active plant power, in W or kW |
+| Off-grid state | `on`/`true`/`1`/`off_grid`, or the corresponding false value |
+| Battery SOC / SOH | Percentage with HA unit `%` |
+| Battery capacity | Wh or kWh |
+| Battery temperature | °C (`°C`, `C`, or `degC`) |
+| Today's six energy totals | PV generation, load, import, export, battery charge and discharge, each in Wh or kWh |
+| Solar forecast | Today's total and remaining energy in Wh or kWh, actual-vs-forecast in `%`, and peak power in W or kW |
+
+Every mapping can be overridden or cleared individually. If home/load power is not
+mapped, the Puck derives it only when PV, grid, battery, and EV are all known:
+`home = max(0, PV - battery + grid - EV)`. Leaving the optional EV mapping blank
+explicitly means there is no separate EV leg and uses zero in that equation. Mapping an
+EV entity whose current state is unavailable does **not** turn it into zero and prevents
+the derivation until it recovers.
+
+HA values keep the `Snapshot` units used by every existing screen: kW, kWh, %, and °C.
+`W` is converted to `kW`, and `Wh` to `kWh`. Missing units, unsupported units, `unknown`,
+`unavailable`, and non-numeric states remain unknown rather than becoming zero. Correct
+the HA entity/template sensor so its `unit_of_measurement` is one of the supported units.
+
+HTTP is supported for a trusted LAN. HTTPS uses the firmware's trusted CA bundle and
+validates the certificate; there is no insecure TLS mode. Use a hostname whose
+certificate chains to a CA trusted by the device.
 
 ### Solar forecast
 
-*Used on the Modbus source only.* With a **SigenStorDisplay Server** the forecast comes
-from the server and these are ignored.
+Direct Modbus always calculates the forecast on the Puck. With a
+**SigenStorDisplay Server** it comes from the server. Home Assistant users explicitly
+choose **Disabled**, **Calculate on Puck**, or **Home Assistant entities**; missing settings
+from an older installation default safely to Disabled.
+
+For **Calculate on Puck**, the location and roof fields below use the existing cached
+Open-Meteo model without changing HA live acquisition or contacting Modbus. For
+**Home Assistant entities**, the semantic mappings may point to any suitable HA
+integration. Today's total forecast is required to make the Solar screen meaningful;
+remaining energy, actual-vs-forecast percentage, and peak power are optional. They are
+included in the same compact HA template request as live data and any that isn't
+mapped is left off the Solar screen from the next restart.
 
 <table>
 <tr><th width="32%">Option</th><th>What it does</th></tr>
@@ -214,7 +328,7 @@ from the server and these are ignored.
 
 ### Display
 
-*All of these work on both sources.*
+*All of these work on all three sources.*
 
 <table>
 <tr><th width="32%">Option</th><th>What it does</th></tr>
@@ -226,7 +340,7 @@ from the server and these are ignored.
 <tr><td><strong>Orientation</strong> ↻</td><td>Quarter turns, <code>0</code> to <code>3</code>, for mounting the Puck whichever way round suits.</td></tr>png
 <tr><td><strong>Auto-cycle every</strong></td><td>Seconds between automatically moving to the next screen. <code>0</code> turns it off. Also switchable by holding PWR for 2 seconds.</td></tr>
 <tr><td><strong>Sweep every</strong></td><td>Minutes between a brightness band sweeping across the screen. This evens out wear on the panel, which matters on an AMOLED showing much the same picture all day. <code>0</code> turns it off.</td></tr>
-<tr><td><strong>Screens</strong> ↻</td><td>A tick per screen for whether it appears at all, and a second for whether the auto-cycle stops on it. Power and Settings are always shown, so their boxes are fixed. On Modbus, Flows and Cost are struck through and cannot be ticked.</td></tr>
+<tr><td><strong>Screens</strong> ↻</td><td>A tick per screen for whether it appears at all, and a second for whether the auto-cycle stops on it. Power and Settings are always shown, so their boxes are fixed. On Modbus and Home Assistant, Flows and Cost are struck through and cannot be ticked.</td></tr>
 </table>
 
 ### Firmware
@@ -244,6 +358,7 @@ from the server and these are ignored.
 <tr><th width="32%">Option</th><th>What it does</th></tr>
 <tr><td><strong>Restart Device</strong></td><td>Reboots it. Needed after any ↻ change above.</td></tr>
 <tr><td><strong>Forget server and token</strong></td><td>Clears your server details. You will need the enrolment URL again.</td></tr>
+<tr><td><strong>Forget Home Assistant token</strong></td><td>Clears only the HA credential; the URL and semantic mappings remain so a replacement token can be entered without rebuilding the configuration.</td></tr>
 <tr><td><strong>Forget WiFi and restart</strong></td><td>Clears the WiFi password and brings the setup network back, for moving the Puck to a different network.</td></tr>
 </table>
 
@@ -256,9 +371,11 @@ from the server and these are ignored.
 | **Not configured** | On WiFi, but it does not know where to get data. Follow steps 3 and 4. |
 | **Waiting for data** | Configured, but nothing has arrived yet. Normal just after a restart. |
 | **Waiting for clock** | It needs the time from the internet before it can make a secure connection. Passes on its own once your network lets it reach an NTP server. |
-| **No data** | It cannot reach the plant, and names the reason underneath. Check the address on the settings page, and check the Puck is still allowed in the Sigen app. |
+| **No data** | The active source failed and the reason appears underneath. Check its URL/address and connection test; for Modbus, also check the Puck is still allowed in the Sigen app. |
 | **Re-enrol needed** | *Server only.* The access token has been revoked. Create a new kiosk device and paste the fresh enrolment URL. |
-| `LIVE ONLY` | You pressed a day button on the Modbus source, which has no stored history to step back into. |
+| **HA token rejected** | Home Assistant returned 401/403. Replace the long-lived token and check that it belongs to an active user. |
+| **entities unavailable** | HA answered, but every mapped entity is `unknown`, `unavailable`, non-numeric, or has an unsupported/missing unit. Use the connection test for detail and inspect those entities in HA Developer Tools. |
+| `LIVE ONLY` | You pressed a day button on Modbus or Home Assistant, neither of which has historical backfill in this version. |
 
 If a Modbus setup worked and then stopped, the usual cause is the Puck's IP address
 changing, which quietly invalidates the permission granted in the Sigen app. Reserve the
@@ -271,6 +388,8 @@ https://makerworld.com/en/models/2581572-guition-esp32s3-4848s040-case-stand-v3#
 
 ## Hardware
 
+**1.75″ round** — the primary, verified board.
+
 | | |
 |---|---|
 | Board | Guition ESP32-4848S040 |
@@ -279,10 +398,32 @@ https://makerworld.com/en/models/2581572-guition-esp32s3-4848s040-case-stand-v3#
 | MCU | ESP32-S3R8, 8 MB PSRAM, 16 MB flash |
 
 
+**2.41″ landscape — early-release testing.** The **V1 hardware revision specifically** (the
+later V2 routes the display and touch resets through the board's I/O expander and repurposes
+GPIO21 as the panel's tearing-effect line, so it needs its own profile and is not currently
+supported — check which revision your board is before flashing; a V1 carries no "Rev2.0"
+silkscreen). On V1 the panel (RM690B0, driven with an SH8601-compatible init sequence over a
+GPIO21 reset), the FT6336 touch and the landscape UI are **confirmed on real hardware**,
+including the software portrait-to-landscape rotation.
+
+| | |
+|---|---|
+| Board | Waveshare ESP32-S3-Touch-AMOLED-2.41, **V1 revision** |
+| Display | 600×450 landscape AMOLED, RM690B0 over QSPI (SH8601-compatible init) |
+| Touch | FT6336 (FocalTech FT5x06 family), I2C |
+| MCU | ESP32-S3R8, 8 MB PSRAM, 16 MB flash |
+| Also on board | PCF85063 RTC, QMI8658 IMU, TCA9554 I/O expander (no AXP2101 PMIC); V1 drives the display and touch resets from GPIO directly |
+
 ## Building it yourself
 
 ```bash
 pio run -e puck -t upload -t monitor
+```
+
+For the 2.41″ landscape board (early-release testing) use the `puck241` environment:
+
+```bash
+pio run -e puck241 -t upload -t monitor
 ```
 
 Screens are developed against canned payloads on the desktop rather than by reflashing,
@@ -292,8 +433,25 @@ which is where every screenshot above came from:
 pio run -e sim && .pio/build/sim/program
 ```
 
-`n`/`p` change fixture, `[`/`]` change screen, `d` shows the parsed data behind what you
-are looking at. `--modbus` previews the shorter five-screen arrangement.
+The landscape screens have their own simulator, `sim241`:
 
-`--selftest` runs the checks that need no hardware: the Modbus register decoder, the
-history ring, the button gestures, the solar forecast model and the screen-off window.
+```bash
+pio run -e sim241 && .pio/build/sim241/program
+```
+
+`n`/`p` change fixture, `[`/`]` change screen, `d` shows the parsed data behind what you
+are looking at. `--modbus` previews the shorter five-screen arrangement also used by HA.
+
+`--selftest` runs the checks that need no hardware: Home Assistant template/payload,
+Recorder parsing and unit handling, source compatibility, the Modbus register decoder,
+history ring, button gestures, solar forecast model and screen-off window.
+
+## Home Assistant V1 scope
+
+Home Assistant provides live power, battery values, configured today's totals and an
+optional solar forecast from HA entities or the Puck's native model. A single optional
+Recorder backfill can restore today's chart after restart using bounded two-hour requests;
+without usable Recorder history, the same charts fill from live polls beginning at boot.
+Previous-day browsing, past-day chart retrieval, detailed source-to-sink flows, tariffs and
+costs/savings remain deliberately unimplemented. The day controls therefore remain
+`LIVE ONLY` in HA mode.

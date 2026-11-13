@@ -17,6 +17,7 @@ struct PowerStatus {
   uint16_t millivolts = 0;
 };
 
+void power_hold();
 void power_begin();
 PowerStatus power_status();
 void power_loop();

@@ -5,6 +5,10 @@
 // showing the battery indicator (it's designed for a mains-only board too),
 // so this stub needs no changes anywhere else.
 
+void power_hold() {
+  Serial.println("[power] no PMIC on this board — device battery indicator disabled");
+}
+
 void power_begin() {
   Serial.println("[power] no PMIC on this board — device battery indicator disabled");
 }
