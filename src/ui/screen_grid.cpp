@@ -7,13 +7,13 @@
 #include "chart_band.h"
 #include "format.h"
 #include "theme.h"
+#include "ui_power_arc.h"
 
 namespace {
 
 // ------------------------------------------------------------------ layout ---
 //
-// A day screen like battery, solar and load, but with no bezel ring: import and
-// export have no ceiling to be a fraction of. The figures sit in the upper half —
+// A day screen like battery, solar and load. The figures sit in the upper half —
 // the two day totals, the two live AC figures, and a live import/export pill —
 // and the day's grid power runs as a bipolar chart across the lower half, import
 // filling up in grid blue and export down in a paler shade about a zero line.
@@ -41,6 +41,7 @@ constexpr lv_coord_t ROW_TWO_VALUE_Y = 8;
 
 lv_obj_t* s_root = nullptr;
 lv_obj_t* s_band = nullptr;
+UiPowerArc s_power_arc;
 lv_obj_t* s_imported = nullptr;
 lv_obj_t* s_exported = nullptr;
 lv_obj_t* s_pill = nullptr;
@@ -76,6 +77,9 @@ lv_obj_t* screen_grid_create(lv_obj_t* parent) {
   lv_obj_set_style_bg_color(s_root, lv_color_hex(PUCK_COLOUR_BG), LV_PART_MAIN);
   lv_obj_set_style_bg_opa(s_root, LV_OPA_COVER, LV_PART_MAIN);
   lv_obj_clear_flag(s_root, LV_OBJ_FLAG_SCROLLABLE);
+
+  // Power import/export ring around the bezel.
+  s_power_arc.create(s_root);
 
   // Before the labels, so they sit on top of it.
   s_band = chart_band_create(s_root, HistorySeries::Grid, PUCK_COLOUR_GRID);
@@ -118,6 +122,9 @@ void screen_grid_update(const Snapshot& snapshot) {
   if (s_band != nullptr) {
     chart_band_refresh(s_band);
   }
+
+  // Power Arc update
+  s_power_arc.update(snapshot.power.grid);
 
   char text[32];
   if (snapshot.valid && snapshot.today.present && snapshot.today.imported.known) {
