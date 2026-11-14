@@ -8,6 +8,7 @@
 #include "theme.h"
 #include "ui_common.h"
 #include "ui_metric_pill.h"
+#include "ui_power_arc.h"
 #include "ui_stat_grid.h"
 
 namespace {
@@ -17,6 +18,8 @@ constexpr uint8_t BAND_SMOOTHING = 15;
 
 lv_obj_t* s_root = nullptr;
 lv_obj_t* s_band = nullptr;
+UiPowerArc s_power_arc;
+
 UiScreenHeader s_header;
 UiMetricPill s_pill;
 UiStatGrid2x2 s_stats;
@@ -39,6 +42,9 @@ void set_figure(lv_obj_t* label, bool known, float kwh) {
 lv_obj_t* screen_load_create(lv_obj_t* parent, bool with_breakdown) {
   s_with_breakdown = with_breakdown;
   s_root = puck_create_screen_root(parent);
+
+  // Power import/export ring around the bezel: always visible, never in the way.
+  s_power_arc.create(s_root);
 
   // Autoscaled load curve; ghost 80 (since PUCK_COLOUR_HOME is nearly white), smoothing 15
   s_band = chart_band_create_standard(s_root, HistorySeries::Load, PUCK_COLOUR_HOME, 0.0f, 0.0f);
@@ -87,6 +93,9 @@ void screen_load_update(const Snapshot& snapshot) {
 
   // The pill is live-only
   s_pill.set_visible(s_live);
+
+  // Power Arc update
+  s_power_arc.update(snapshot.power.grid);
 
   // What is being drawn right now — the house plus the car
   const MaybeFloat home = snapshot.valid ? snapshot.power.home : MaybeFloat{};
