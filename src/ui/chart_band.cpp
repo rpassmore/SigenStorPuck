@@ -3,6 +3,7 @@
 #include <math.h>
 
 #include "board_config.h"
+#include "psram_alloc.h"
 #include "theme.h"
 #include "ui_perf.h"
 
@@ -14,10 +15,11 @@ namespace {
 constexpr lv_coord_t COLUMN_PX = 2;
 
 // Enough for a band spanning the whole panel, not just the safe square: a
-// bezel-clipped band is drawn edge to edge and lets the glass cut the ends. The
-// 2.41's landscape band is 564 px wide (282 columns at COLUMN_PX), so this must
-// clear that or a wide band stops short of its right edge.
-constexpr size_t MAX_COLUMNS = 288;  // a full-width landscape band at COLUMN_PX
+// bezel-clipped band is drawn edge to edge and lets the glass cut the ends. Taken
+// from the board's width rather than fixed, because a fixed cap was sized for one
+// board and silently cut short a band on a wider one: it stops at the last column
+// rather than failing. The arrays it sizes are in PSRAM (chart_band_create()).
+constexpr size_t MAX_COLUMNS = (PUCK_LCD_WIDTH + COLUMN_PX - 1) / COLUMN_PX;
 
 // Three weights, which is what makes this an envelope rather than a silhouette:
 // a faint wash under the curve, the column's own min-to-max spread picked out a
@@ -49,7 +51,8 @@ constexpr lv_coord_t CENTRE_Y = PUCK_LCD_HEIGHT / 2;
 
 // Enough for every band alive at once: battery (1), solar (2, actual + forecast),
 // load (1) and, on the landscape UI, grid (1). Each carries a MAX_COLUMNS reduce
-// cache, ~3.4 KB, so the pool is sized to what the screens actually build.
+// cache (12 bytes a column: ~3.6 KB on the 2.41), so the pool is sized to what
+// the screens actually build.
 constexpr size_t MAX_BANDS = 6;
 
 struct Band {
@@ -77,7 +80,10 @@ struct Band {
   // buffer slice the object intersects, and with a 40-line buffer a ~90 px band
   // is three slices. Reducing 1440 samples three times per redraw to draw the
   // same picture would be pure waste.
-  HistoryColumn column[MAX_COLUMNS];
+  //
+  // MAX_COLUMNS of them, allocated by chart_band_create() in PSRAM: six bands'
+  // worth was 20 KB of internal RAM as an array, which a TLS handshake needs more.
+  HistoryColumn* column = nullptr;
   size_t columns = 0;
   float drawn_min = 0.0f;
   float drawn_max = 0.0f;
@@ -175,6 +181,84 @@ void draw_band_bipolar(lv_draw_ctx_t* ctx, Band* band, const lv_area_t& coords,
   lv_draw_rect(ctx, &zero, &line);
 }
 
+// The outline as one anti-aliased line through the top of each column, for
+// boards that set PUCK_CHART_SMOOTH_EDGE.
+//
+// The column path draws the outline as a 2 px block per column, bridged down to
+// the next. On a dense AMOLED that is a curve; at a larger panel's lower pixel
+// density it shows as stairs on a gentle slope and a jagged run on a steep one.
+// Here the fill under the line follows it a pixel column at a time, so the fill's
+// own corners do not poke out beside the line in steps.
+//
+// Not for a bezel-clipped band: draw_band() keeps those on the column path, which
+// is where the clipping lives. No board that wants this has a round bezel.
+void draw_band_smooth(lv_draw_ctx_t* ctx, Band* band, const lv_area_t& coords, float scale,
+                      bool ghosted, const lv_draw_rect_dsc_t& fill,
+                      const lv_draw_rect_dsc_t& spread, const lv_draw_rect_dsc_t& edge) {
+  const auto top_of = [&](size_t c) {
+    float y = static_cast<float>(coords.y2) - (band->column[c].max_value - band->drawn_min) * scale;
+    if (y < coords.y1) {
+      y = static_cast<float>(coords.y1);
+    }
+    if (y > coords.y2) {
+      y = static_cast<float>(coords.y2);
+    }
+    return y;
+  };
+
+  lv_draw_line_dsc_t line;
+  lv_draw_line_dsc_init(&line);
+  line.color = edge.bg_color;
+  line.opa = edge.bg_opa;
+  line.width = EDGE_PX;
+  // Rounded so consecutive segments meet without a notch at each column.
+  line.round_start = 1;
+  line.round_end = 1;
+
+  for (size_t c = 0; c < band->columns; ++c) {
+    if (!band->column[c].known) {
+      continue;  // a gap stays a gap
+    }
+    const lv_coord_t x = coords.x1 + static_cast<lv_coord_t>(c) * COLUMN_PX;
+    if (x > coords.x2) {
+      break;
+    }
+    // The line runs from this column's top to the next column's; a column with
+    // no known neighbour to its right gets a flat stub across its own width.
+    const float here = top_of(c);
+    const bool joined = c + 1 < band->columns && band->column[c + 1].known;
+    const float there = joined ? top_of(c + 1) : here;
+
+    // The wash, a pixel column at a time at the line's height.
+    for (lv_coord_t p = 0; p < COLUMN_PX && x + p <= coords.x2; ++p) {
+      const float y = here + (there - here) * static_cast<float>(p) / COLUMN_PX;
+      const lv_area_t area = {static_cast<lv_coord_t>(x + p), static_cast<lv_coord_t>(lroundf(y)),
+                              static_cast<lv_coord_t>(x + p), coords.y2};
+      lv_draw_rect(ctx, &fill, &area);
+    }
+
+    // The min-to-max spread, as on the column path, and likewise not on a
+    // ghosted band.
+    if (!ghosted) {
+      const float low = band->column[c].min_value - band->drawn_min;
+      lv_area_t area = {x, static_cast<lv_coord_t>(lroundf(here)),
+                        static_cast<lv_coord_t>(x + COLUMN_PX - 1),
+                        static_cast<lv_coord_t>(coords.y2 - low * scale)};
+      if (area.x2 > coords.x2) {
+        area.x2 = coords.x2;
+      }
+      if (area.y2 - area.y1 > EDGE_PX) {
+        lv_draw_rect(ctx, &spread, &area);
+      }
+    }
+
+    const lv_point_t from = {x, static_cast<lv_coord_t>(lroundf(here))};
+    const lv_point_t to = {static_cast<lv_coord_t>(joined ? x + COLUMN_PX : x + COLUMN_PX - 1),
+                           static_cast<lv_coord_t>(lroundf(there))};
+    lv_draw_line(ctx, &line, &from, &to);
+  }
+}
+
 void draw_band(lv_event_t* event) {
   if (s_paused) {
     return;
@@ -253,6 +337,11 @@ void draw_band(lv_event_t* event) {
   lv_draw_rect_dsc_init(&edge);
   edge.bg_color = lv_color_hex(band->colour);
   edge.bg_opa = ghosted ? lifted(static_cast<uint16_t>(band->intensity) * 2) : LV_OPA_COVER;
+
+  if (PUCK_CHART_SMOOTH_EDGE && band->clip_radius == 0) {
+    draw_band_smooth(ctx, band, coords, scale, ghosted, fill, spread, edge);
+    return;
+  }
 
   // The previous column's cap height, so the outline can be drawn as a connected
   // line; -1 whenever the run breaks, because a gap must not be spanned.
@@ -383,9 +472,13 @@ void smooth_columns(Band* band) {
   if (half < 1 || band->columns == 0) {
     return;
   }
-  // Static rather than on the stack: this runs on the UI task, one band at a
-  // time, and 208 columns is 2.5 KB that has no business on a task stack.
-  static HistoryColumn source[MAX_COLUMNS];
+  // Not on the stack: this runs on the UI task, one band at a time, and 288
+  // columns is 3.4 KB that has no business on a task stack — nor in internal RAM.
+  static HistoryColumn* const source =
+      static_cast<HistoryColumn*>(psram_alloc(MAX_COLUMNS * sizeof(HistoryColumn)));
+  if (source == nullptr) {
+    return;  // unsmoothed is still a correct curve
+  }
   for (size_t c = 0; c < band->columns; ++c) {
     source[c] = band->column[c];
   }
@@ -434,6 +527,12 @@ lv_obj_t* chart_band_create(lv_obj_t* parent, HistorySeries series, uint32_t col
   lv_obj_clear_flag(obj, LV_OBJ_FLAG_CLICKABLE);
 
   *band = Band{};
+  band->column = static_cast<HistoryColumn*>(psram_alloc(MAX_COLUMNS * sizeof(HistoryColumn)));
+  if (band->column == nullptr) {
+    LV_LOG_WARN("no memory for a chart band");
+    lv_obj_del(obj);
+    return nullptr;
+  }
   band->used = true;
   band->obj = obj;
   band->series = series;

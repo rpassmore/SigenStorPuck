@@ -67,6 +67,16 @@ static constexpr uint16_t PUCK_LVGL_BUFFER_LINES = 40;
 // download mode if held while power is applied.
 static constexpr int8_t PUCK_BUTTON_BOOT = 0;
 
+// PWR is not a GPIO on this board: it reaches the AXP2101's PWRON pin, and
+// power.cpp reads its press/release edges from the PMIC. No latch either — the
+// PMIC owns the rails. -1 tells power.cpp to take the PMIC path.
+static constexpr int8_t PUCK_BUTTON_PWR = -1;
+static constexpr int8_t PUCK_POWER_LATCH = -1;
+
+// Already clean from the PMIC; a minimum here would throw away the taps
+// power.cpp works hardest to keep (see power_loop()).
+static constexpr uint32_t PUCK_PWR_DEBOUNCE_MS = 0;
+
 // ------------------------------------------------------------------ touch ---
 
 static constexpr int8_t PUCK_TOUCH_INT = 11;
@@ -116,6 +126,11 @@ static constexpr int16_t PUCK_SAFE_SQUARE = 410;
 // How old a reading may get before the screen calls it stale. The server's poll
 // interval defaults to 5 s, so this allows several missed cycles before
 // complaining (PLAN.md §A4).
+// Draw the day charts' outline as one anti-aliased line (chart_band.cpp) rather
+// than a 2 px block per column. Off: at this AMOLED's density the blocks already
+// read as a curve, and the line costs more draw time than the panel can spare.
+static constexpr bool PUCK_CHART_SMOOTH_EDGE = false;
+
 static constexpr uint32_t PUCK_STALE_AFTER_S = 30;
 
 // Decimal places on live kW figures. The payload carries two.

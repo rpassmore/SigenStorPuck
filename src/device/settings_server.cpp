@@ -215,7 +215,9 @@ String page(const String& message, bool message_is_error) {
   const PowerStatus power = power_status();
   html += " &middot; power: ";
   if (!power.pmic_ok) {
-    html += "PMIC not detected";
+    // The 2.41 has no PMIC by design (a battery latch instead), so saying it was
+    // "not detected" there would read as a fault.
+    html += PUCK_POWER_LATCH >= 0 ? "battery latch, no PMIC" : "PMIC not detected";
   } else if (!power.battery_present) {
     html += power.usb_present ? "USB, no battery fitted" : "no battery fitted";
   } else {
@@ -226,6 +228,13 @@ String page(const String& message, bool message_is_error) {
     }
     html += power.charging ? ", charging" : (power.usb_present ? ", on USB" : ", on battery");
   }
+  // Internal RAM, which is what every HTTPS request spends: a TLS handshake needs
+  // tens of kilobytes of it in one piece, so the largest block is the number that
+  // decides whether the next poll or update check can connect at all. Shown here
+  // rather than only in a failure message, so a squeeze is visible before it bites.
+  html += " &middot; memory: ";
+  html += String(ESP.getFreeHeap() / 1024) + " KB free, largest block ";
+  html += String(ESP.getMaxAllocHeap() / 1024) + " KB";
   html += "</p>";
 
   if (message.length() > 0) {
@@ -592,16 +601,18 @@ String page(const String& message, bool message_is_error) {
   // Indexed by PuckScreen id, but listed below in PUCK_SCREEN_ORDER so the page
   // reads the way the device swipes.
   static const char* const SCREEN_NAME[PUCK_SCREEN_COUNT] = {
-      "Power", "Battery", "Solar", "Flows", "Cost", "Settings", "Load", "Grid"};
+      "Power", "Battery", "Solar", "Flows", "Cost", "Settings", "Load", "Grid", "Events"};
   html += "<label>Screens (applies on restart)</label>";
   html += "<table class=screens><tr><th></th><th>Show</th><th>Auto-cycle</th></tr>";
   for (PuckScreen screen : PUCK_SCREEN_ORDER) {
     const uint8_t i = static_cast<uint8_t>(screen);
     const bool needs_detail = (PUCK_DETAILED_SCREENS & (1u << i)) != 0;
+    const bool needs_events = (PUCK_EVENTS_SCREENS & (1u << i)) != 0;
     // A screen the source cannot fill is shown struck through rather than hidden,
     // so the list is the same shape whichever source is configured and nobody
-    // wonders where two of them went.
-    const bool unavailable = needs_detail && !capabilities.detailed_flows;
+    // wonders where three of them went.
+    const bool unavailable = (needs_detail && !capabilities.detailed_flows) ||
+                             (needs_events && !capabilities.events);
     html += "<tr><td>";
     html += unavailable ? "<s>" : "";
     html += SCREEN_NAME[i];
@@ -1019,8 +1030,8 @@ void handle_display() {
   // An unchecked box sends nothing at all, so the masks are rebuilt from what did
   // arrive rather than edited. A disabled box sends nothing either, which is why
   // the two always-on screens are forced back in here as well as in ui_create().
-  uint8_t visible = (1u << PUCK_SCREEN_POWER) | (1u << PUCK_SCREEN_SETTINGS);
-  uint8_t rotate = 0;
+  uint16_t visible = (1u << PUCK_SCREEN_POWER) | (1u << PUCK_SCREEN_SETTINGS);
+  uint16_t rotate = 0;
   for (uint8_t i = 0; i < PUCK_SCREEN_COUNT; ++i) {
     if (s_server.hasArg(("scr" + String(i)).c_str())) {
       visible |= (1u << i);
@@ -1046,12 +1057,12 @@ void handle_update_check() {
   // switched on, so it is honoured either way — but it no longer flips the setting
   // as a side effect. That behaviour changed a stored preference from a button
   // labelled as doing something else, and left no way to change it back.
-  if (!updater_enabled()) {
-    updater_check();  // synchronous: nothing else will do it for us
-    send_page("", false);
-    return;
-  }
+  //
+  // Queued for the poll task like every other check, never run here: this handler
+  // is on the LVGL thread. The page shows "Checking…" and refreshes itself until
+  // the result lands; the wake saves waiting out a whole poll interval for it.
   updater_request_check(/*force=*/true);
+  poller_wake();
   send_page("", false);
 }
 
