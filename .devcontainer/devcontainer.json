@@ -10,7 +10,8 @@
     "customizations": {
         "vscode": {
             "extensions": [
-                "platformio.platformio-ide",
+                "pioarduino.pioarduino-ide",
+                "google.google-antigravity",
                 "ms-vscode.cpptools",
                 "ms-vscode.cmake-tools"
             ],
