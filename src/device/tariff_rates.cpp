@@ -139,7 +139,7 @@ FetchResult fetch_rates_for_code(const String& product_code, RateSlot slots[TARI
     JsonDocument doc(&json_allocator);
 
     // Filter to retain only relevant properties in PSRAM, discarding all unused JSON metadata
-    JsonDocument filter;
+    JsonDocument filter(&json_allocator);
     filter["next"] = true;
     JsonObject filter_entry = filter["results"].add<JsonObject>();
     filter_entry["valid_from"] = true;

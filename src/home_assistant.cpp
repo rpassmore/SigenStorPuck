@@ -8,6 +8,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "psram_allocator.h"
+
 const HaEntityDescriptor HA_ENTITIES[HA_ENTITY_COUNT] = {
     {"pp", "ha_pp", "ha_pp", "PV power", "sensor.sigen_plant_pv_power", HaValueKind::Power},
     {"gp", "ha_gp", "ha_gp", "Grid power", "sensor.sigen_plant_grid_active_power",
@@ -287,7 +289,8 @@ bool ha_payload_parse(const char* json, size_t length, Snapshot* out, HaParseInf
   if (json == nullptr || out == nullptr) {
     return false;
   }
-  JsonDocument doc;
+  PsramAllocator json_allocator;
+  JsonDocument doc(&json_allocator);
   if (deserializeJson(doc, json, length) != DeserializationError::Ok ||
       !doc.is<JsonObjectConst>()) {
     return false;

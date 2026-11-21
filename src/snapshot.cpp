@@ -2,6 +2,8 @@
 
 #include <ArduinoJson.h>
 
+#include "psram_allocator.h"
+
 namespace {
 
 // isNull() is true for both an explicit JSON null and an absent key, which is
@@ -31,9 +33,11 @@ bool snapshot_parse(const char* json, size_t length, Snapshot* out) {
     return false;
   }
 
-  // ArduinoJson v7's elastic document. At ~400 bytes this needs no PSRAM
-  // allocator, which is the entire point of the server-side /api/summary.
-  JsonDocument doc;
+  // Every per-poll document uses the PSRAM allocator on the device. Keeping even
+  // this small summary off the internal heap avoids another fragmentation source
+  // for the TLS handshake; the simulator uses the same code with malloc.
+  PsramAllocator json_allocator;
+  JsonDocument doc(&json_allocator);
   if (deserializeJson(doc, json, length) != DeserializationError::Ok) {
     return false;
   }

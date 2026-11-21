@@ -9,9 +9,14 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
+#include <esp_ota_ops.h>
+#include <esp_partition.h>
 
 #include "board_config.h"
+#include "http_deadline.h"
+#include "http_psram.h"
 #include "net.h"
+#include "psram_allocator.h"
 #include "settings.h"
 
 namespace {
@@ -50,6 +55,13 @@ constexpr const char* FIRMWARE_URL =
 // requests to GitHub. The "Check now" button bypasses this.
 constexpr uint32_t CHECK_MIN_INTERVAL_MS = 10 * 60 * 1000;
 
+// Manifest and firmware are separate TLS sessions. Both need an explicit
+// deadline: HTTPClient's socket timeout is not reliable for NetworkClientSecure.
+constexpr uint16_t MANIFEST_CONNECT_TIMEOUT_MS = 5000;
+constexpr uint16_t MANIFEST_TOTAL_TIMEOUT_MS = 10000;
+constexpr uint16_t FIRMWARE_TOTAL_TIMEOUT_MS = 60000;
+constexpr size_t MAX_MANIFEST_BYTES = 16 * 1024;
+
 
 // Guards s_status, which the background check writes and the settings page reads.
 // Without it the page could copy a String mid-assignment, which is a use-after-free
@@ -68,7 +80,8 @@ bool s_ever_checked = false;
 extern "C" const uint8_t rootca_crt_bundle_start[] asm("_binary_x509_crt_bundle_start");
 extern "C" const uint8_t rootca_crt_bundle_end[] asm("_binary_x509_crt_bundle_end");
 
-void attach_bundle(WiFiClientSecure& client) {
+template <typename Client>
+void attach_bundle(Client& client) {
   // The same validated-TLS rule as the API client: the cert bundle covers GitHub's
   // CDN as well as your own server, which is the reason for using a bundle rather
   // than pinning a root.
@@ -146,6 +159,121 @@ void publish(const UpdateStatus& status) {
   }
 }
 
+struct ManifestInfo {
+  String version;
+  uint32_t firmware_size = 0;
+};
+
+// Shared by the periodic check and the re-check immediately before flashing.
+// A manifest that changed between the two must not be able to turn an "apply"
+// into a downgrade or an image that does not fit the spare slot.
+bool fetch_manifest(ManifestInfo* info, String* error) {
+  DeadlineClient<WiFiClientSecure> client;
+  attach_bundle(client);
+  HttpDeadline deadline(client, MANIFEST_TOTAL_TIMEOUT_MS);
+  client.setDeadline(&deadline);
+
+  HTTPClient http;
+  http.setConnectTimeout(MANIFEST_CONNECT_TIMEOUT_MS);
+  http.setTimeout(MANIFEST_TOTAL_TIMEOUT_MS);
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  if (!http.begin(client, MANIFEST_URL)) {
+    *error = "could not parse the update URL";
+    return false;
+  }
+
+  const int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    const bool expired = deadline.cancel();
+    *error = expired ? "the update server stalled" : describe_http_error(code);
+    http.end();
+    return false;
+  }
+
+  LimitedStringStream stream(MAX_MANIFEST_BYTES);
+  const int written = http.writeToStream(&stream);
+  const bool expired = deadline.cancel();
+  http.end();
+  if (expired) {
+    *error = "the update server stalled";
+    return false;
+  }
+  if (written < 0 || stream.overflow() || stream.length() == 0) {
+    *error = "manifest response was empty or too large";
+    return false;
+  }
+
+  PsramAllocator json_allocator;
+  JsonDocument doc(&json_allocator);
+  if (deserializeJson(doc, stream.value()) != DeserializationError::Ok) {
+    *error = "manifest did not parse";
+    return false;
+  }
+
+  info->version = doc["version"] | "";
+  if (info->version.isEmpty()) {
+    *error = "manifest has no version";
+    return false;
+  }
+  info->firmware_size = doc["firmware_size"] | 0u;
+
+  // Cross-flash guard: never act on a manifest built for another board. The
+  // per-slug URL already keeps them apart; this catches a misplaced manifest,
+  // which matters because the two variants share a version and so cannot be told
+  // apart by version alone. An absent board field is allowed (older manifests).
+  const String board = doc["board"] | "";
+  if (!board.isEmpty() && board != PUCK_BOARD_SLUG) {
+    *error = "the release is for a different board";
+    return false;
+  }
+  return true;
+}
+
+bool firmware_fits(uint32_t size, String* error) {
+  if (size == 0) {
+    return true;  // older manifests do not advertise a size
+  }
+  const esp_partition_t* ota = esp_ota_get_next_update_partition(nullptr);
+  if (ota == nullptr) {
+    *error = "no spare OTA partition is available";
+    return false;
+  }
+  if (size > ota->size) {
+    *error = "the firmware image does not fit the spare OTA slot";
+    return false;
+  }
+  return true;
+}
+
+// Called from loop() once the image has had time to prove itself. Confirming in
+// updater_begin() would accept any image that merely drew one frame, even if it
+// crashed later in the poller or settings path. Until this runs, the bootloader
+// still rolls back on the next reboot.
+bool confirm_pending_update() {
+  const esp_partition_t* running = esp_ota_get_running_partition();
+  if (running == nullptr) {
+    Serial.println("[update] cannot identify the running app partition");
+    return false;
+  }
+
+  esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
+  const esp_err_t state_result = esp_ota_get_state_partition(running, &state);
+  if (state_result != ESP_OK) {
+    Serial.printf("[update] rollback state unavailable (%d)\n", static_cast<int>(state_result));
+    return false;
+  }
+  Serial.printf("[update] boot partition %s at 0x%x, image state %d\n", running->label,
+                static_cast<unsigned>(running->address), static_cast<int>(state));
+  if (state != ESP_OTA_IMG_PENDING_VERIFY) {
+    return true;  // nothing to confirm
+  }
+
+  const esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
+  Serial.printf("[update] confirmed booted firmware (%s)\n",
+                err == ESP_OK ? "ok" : esp_err_to_name(err));
+  return err == ESP_OK;
+}
+
 // Builds a status rather than mutating the shared one, so the whole result becomes
 // visible in a single assignment and the page never sees a half-updated check.
 UpdateStatus perform_check() {
@@ -171,52 +299,19 @@ UpdateStatus perform_check() {
     return result;
   }
 
-  WiFiClientSecure client;
-  attach_bundle(client);
-
-  HTTPClient http;
-  http.setConnectTimeout(5000);
-  http.setTimeout(10000);
-  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  if (!http.begin(client, MANIFEST_URL)) {
+  ManifestInfo info;
+  String error;
+  if (!fetch_manifest(&info, &error)) {
     result.state = UpdateState::Failed;
-    result.message = "could not parse the update URL";
+    result.message = error;
     return result;
   }
 
-  const int code = http.GET();
-  if (code != HTTP_CODE_OK) {
-    http.end();
+  result.latest_version = info.version;
+  result.firmware_size = info.firmware_size;
+  if (!firmware_fits(info.firmware_size, &error)) {
     result.state = UpdateState::Failed;
-    result.message = describe_http_error(code);
-    return result;
-  }
-
-  const String body = http.getString();
-  http.end();
-
-  JsonDocument doc;
-  if (deserializeJson(doc, body) != DeserializationError::Ok) {
-    result.state = UpdateState::Failed;
-    result.message = "manifest did not parse";
-    return result;
-  }
-
-  result.latest_version = doc["version"] | "";
-  if (result.latest_version.isEmpty()) {
-    result.state = UpdateState::Failed;
-    result.message = "manifest has no version";
-    return result;
-  }
-
-  // Cross-flash guard: never act on a manifest built for another board. The
-  // per-slug URL already keeps them apart; this catches a misplaced manifest,
-  // which matters because the two variants share a version and so cannot be told
-  // apart by version alone. An absent board field is allowed (older manifests).
-  const String board = doc["board"] | "";
-  if (!board.isEmpty() && board != PUCK_BOARD_SLUG) {
-    result.state = UpdateState::Failed;
-    result.message = "the release is for a different board";
+    result.message = error;
     return result;
   }
 
@@ -234,20 +329,60 @@ void perform_apply() {
     return;
   }
   UpdateStatus status = updater_status();
-  Serial.printf("[update] downloading %s\n", status.latest_version.c_str());
+
+  // Re-read the manifest before touching a slot. The check may be minutes old,
+  // and a changed version or an oversized image turns "apply" into a downgrade
+  // or a failed flash at exactly the wrong moment.
+  ManifestInfo info;
+  String error;
+  if (!fetch_manifest(&info, &error)) {
+    status.state = UpdateState::Failed;
+    status.message = error;
+    publish(status);
+    return;
+  }
+  if (!is_newer(info.version, String(PUCK_FW_VERSION)) || info.version != status.latest_version) {
+    status.state = UpdateState::Failed;
+    status.message = "the release changed since the check — check again";
+    publish(status);
+    return;
+  }
+  if (!firmware_fits(info.firmware_size, &error)) {
+    status.state = UpdateState::Failed;
+    status.message = error;
+    publish(status);
+    return;
+  }
+
+  Serial.printf("[update] downloading %s\n", info.version.c_str());
   status.state = UpdateState::Downloading;
+  status.message = "";
+  status.latest_version = info.version;
+  status.firmware_size = info.firmware_size;
   publish(status);
 
-  WiFiClientSecure client;
+  DeadlineClient<WiFiClientSecure> client;
   attach_bundle(client);
+  HttpDeadline deadline(client, FIRMWARE_TOTAL_TIMEOUT_MS);
+  client.setDeadline(&deadline);
 
-  httpUpdate.rebootOnUpdate(true);
-  httpUpdate.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  // A local HTTPUpdate instance carries its own timeout; the global one has no
+  // explicit deadline. The request callback applies the timeout to the actual
+  // HTTPClient after redirects have been resolved.
+  HTTPUpdate downloader(FIRMWARE_TOTAL_TIMEOUT_MS);
+  downloader.rebootOnUpdate(true);
+  downloader.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
 
   // Writes into whichever OTA slot is not running. If the new image will not boot,
   // the bootloader falls back to this one — which is the reason for the stock
   // two-slot 16 MB partition table.
-  const t_httpUpdate_return result = httpUpdate.update(client, FIRMWARE_URL);
+  const t_httpUpdate_return result =
+      downloader.update(client, FIRMWARE_URL, "",
+                        [](HTTPClient* http) {
+                          http->setConnectTimeout(MANIFEST_CONNECT_TIMEOUT_MS);
+                          http->setTimeout(FIRMWARE_TOTAL_TIMEOUT_MS);
+                        });
+  const bool expired = deadline.cancel();
   switch (result) {
     case HTTP_UPDATE_OK:
       // Not reached: rebootOnUpdate restarts us.
@@ -260,7 +395,8 @@ void perform_apply() {
     case HTTP_UPDATE_FAILED:
     default:
       status.state = UpdateState::Failed;
-      status.message = httpUpdate.getLastErrorString();
+      status.message = expired ? "the update download timed out"
+                               : downloader.getLastErrorString();
       Serial.printf("[update] failed: %s\n", status.message.c_str());
       break;
   }
@@ -276,6 +412,10 @@ void updater_begin() {
   UpdateStatus initial;
   initial.state = UpdateState::Idle;
   publish(initial);
+}
+
+bool updater_confirm_pending_update() {
+  return confirm_pending_update();
 }
 
 bool updater_enabled() {

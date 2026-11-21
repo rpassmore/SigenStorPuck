@@ -8,6 +8,9 @@
 
 #include "board_config.h"
 #include "forecast_store.h"
+#include "http_deadline.h"
+#include "http_psram.h"
+#include "psram_allocator.h"
 #include "settings.h"
 #include "solar_forecast.h"
 
@@ -31,6 +34,7 @@ constexpr size_t MAX_HOURS = 26;
 
 constexpr uint16_t CONNECT_TIMEOUT_MS = 4000;
 constexpr uint16_t TOTAL_TIMEOUT_MS = 8000;
+constexpr size_t MAX_BODY_BYTES = 64 * 1024;
 
 constexpr const char* USER_AGENT = "SigenStorPuck/" PUCK_FW_VERSION " (ESP32-S3)";
 
@@ -150,9 +154,11 @@ FetchResult fetch_weather(const SolarSite& site) {
            "&timezone=auto&forecast_days=1&timeformat=unixtime",
            HOST, static_cast<double>(site.latitude), static_cast<double>(site.longitude));
 
-  WiFiClientSecure tls;
+  DeadlineClient<WiFiClientSecure> tls;
   tls.setCACertBundle(rootca_crt_bundle_start,
                       static_cast<size_t>(rootca_crt_bundle_end - rootca_crt_bundle_start));
+  HttpDeadline deadline(tls, TOTAL_TIMEOUT_MS);
+  tls.setDeadline(&deadline);
 
   HTTPClient http;
   http.setConnectTimeout(CONNECT_TIMEOUT_MS);
@@ -168,18 +174,30 @@ FetchResult fetch_weather(const SolarSite& site) {
 
   const int status = http.GET();
   if (status <= 0) {
+    const bool expired = deadline.cancel();
     http.end();
-    return FetchResult::TlsFailed;
+    return expired ? FetchResult::ReadTimeout : FetchResult::TlsFailed;
   }
   if (status != HTTP_CODE_OK) {
+    deadline.cancel();
     http.end();
     return FetchResult::HttpError;
   }
 
-  const String body = http.getString();
+  LimitedStringStream stream(MAX_BODY_BYTES);
+  const int written = http.writeToStream(&stream);
+  const bool expired = deadline.cancel();
   http.end();
+  if (expired) {
+    return FetchResult::ReadTimeout;
+  }
+  if (written < 0 || stream.overflow() || stream.length() == 0) {
+    return FetchResult::BadPayload;
+  }
+  const String& body = stream.value();
 
-  JsonDocument doc;
+  PsramAllocator json_allocator;
+  JsonDocument doc(&json_allocator);
   if (deserializeJson(doc, body) != DeserializationError::Ok) {
     return FetchResult::BadPayload;
   }

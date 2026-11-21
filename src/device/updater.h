@@ -21,9 +21,16 @@ struct UpdateStatus {
   UpdateState state = UpdateState::Idle;
   String latest_version;  // as advertised by the release manifest
   String message;         // why it failed, when it did
+  uint32_t firmware_size = 0;  // advertised image size, 0 for older manifests
 };
 
 void updater_begin();
+
+// Confirms a just-booted OTA image once the app has proved stable. Called from
+// loop(), after a successful poll or an uptime grace period. Returns false if
+// the state could not be read or the confirmation write failed, so the caller
+// can retry.
+bool updater_confirm_pending_update();
 
 // Starts a check in the background and returns at once.
 //

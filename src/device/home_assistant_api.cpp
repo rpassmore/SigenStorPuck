@@ -11,6 +11,9 @@
 
 #include "board_config.h"
 #include "home_assistant_history.h"
+#include "http_deadline.h"
+#include "http_psram.h"
+#include "psram_allocator.h"
 #include "settings.h"
 #include "solar_source.h"
 
@@ -21,6 +24,11 @@ constexpr const char* USER_AGENT = "SigenStorPuck/" PUCK_FW_VERSION " (ESP32-S3)
 constexpr uint16_t CONNECT_TIMEOUT_MS = 4000;
 constexpr uint16_t TOTAL_TIMEOUT_MS = 8000;
 constexpr uint16_t HISTORY_IDLE_TIMEOUT_MS = 12000;
+// A Recorder query can take a while to produce its first byte. Keep the per-read
+// idle timeout above, but cap the whole exchange so a stalled response cannot
+// hold the poller indefinitely. 30 s is generous because history backfills retry.
+constexpr uint16_t HISTORY_TOTAL_TIMEOUT_MS = 30000;
+constexpr size_t MAX_BODY_BYTES = 256 * 1024;
 
 HaParseInfo s_live_info;
 bool s_live_info_valid = false;
@@ -145,15 +153,16 @@ FetchResult home_assistant_api_fetch(Snapshot* out, int* status_code,
       return FetchResult::BadPayload;
     }
 
-    JsonDocument request_doc;
+    PsramAllocator request_allocator;
+    JsonDocument request_doc(&request_allocator);
     request_doc["template"] = rendered_template.get();
     request_body.reserve(strlen(rendered_template.get()) + 32);
     serializeJson(request_doc, request_body);
   }  // release the template and JSON tree before allocating TLS buffers
 
-  WiFiClient plain;
-  WiFiClientSecure tls;
-  WiFiClient* client = nullptr;
+  DeadlineClient<WiFiClient> plain;
+  DeadlineClient<WiFiClientSecure> tls;
+  NetworkClient* client = nullptr;
   if (secure) {
     // Home Assistant bearer tokens deserve the same certificate validation as
     // server kiosk tokens. Never replace this with setInsecure().
@@ -163,6 +172,10 @@ FetchResult home_assistant_api_fetch(Snapshot* out, int* status_code,
   } else {
     client = &plain;
   }
+
+  HttpDeadline deadline(*client, TOTAL_TIMEOUT_MS);
+  plain.setDeadline(&deadline);
+  tls.setDeadline(&deadline);
 
   HTTPClient http;
   http.setConnectTimeout(CONNECT_TIMEOUT_MS);
@@ -186,17 +199,31 @@ FetchResult home_assistant_api_fetch(Snapshot* out, int* status_code,
     *status_code = status;
   }
   if (status <= 0) {
+    const bool expired = deadline.cancel();
     http.end();
+    if (expired) {
+      return FetchResult::ReadTimeout;
+    }
     return secure ? FetchResult::TlsFailed : FetchResult::ConnectFailed;
   }
   const FetchResult http_result = status_result(status);
   if (http_result != FetchResult::Ok) {
+    deadline.cancel();
     http.end();
     return http_result;
   }
 
-  const String body = http.getString();
+  LimitedStringStream stream(MAX_BODY_BYTES);
+  const int written = http.writeToStream(&stream);
+  const bool expired = deadline.cancel();
   http.end();
+  if (expired) {
+    return FetchResult::ReadTimeout;
+  }
+  if (written < 0 || stream.overflow() || stream.length() == 0) {
+    return FetchResult::BadPayload;
+  }
+  const String& body = stream.value();
   Snapshot parsed;
   HaParseInfo info;
   if (!ha_payload_parse(body.c_str(), body.length(), &parsed, &info)) {
@@ -309,9 +336,9 @@ FetchResult home_assistant_api_fetch_history(uint32_t window_start_ts,
   // downsampling. Depending on HA's domain/integration significance rules would
   // make otherwise equivalent power mappings produce different chart fidelity.
 
-  WiFiClient plain;
-  WiFiClientSecure tls;
-  WiFiClient* client = nullptr;
+  DeadlineClient<WiFiClient> plain;
+  DeadlineClient<WiFiClientSecure> tls;
+  NetworkClient* client = nullptr;
   if (secure) {
     // Same validation as the live template call; Recorder reuses the bearer
     // token but never weakens transport security to obtain optional history.
@@ -321,6 +348,10 @@ FetchResult home_assistant_api_fetch_history(uint32_t window_start_ts,
   } else {
     client = &plain;
   }
+
+  HttpDeadline deadline(*client, HISTORY_TOTAL_TIMEOUT_MS);
+  plain.setDeadline(&deadline);
+  tls.setDeadline(&deadline);
 
   HTTPClient http;
   http.setConnectTimeout(CONNECT_TIMEOUT_MS);
@@ -345,11 +376,16 @@ FetchResult home_assistant_api_fetch_history(uint32_t window_start_ts,
     *status_code = status;
   }
   if (status <= 0) {
+    const bool expired = deadline.cancel();
     http.end();
+    if (expired) {
+      return FetchResult::ReadTimeout;
+    }
     return secure ? FetchResult::TlsFailed : FetchResult::ConnectFailed;
   }
   const FetchResult http_result = status_result(status);
   if (http_result != FetchResult::Ok) {
+    deadline.cancel();
     http.end();
     return http_result;
   }
@@ -358,6 +394,7 @@ FetchResult home_assistant_api_fetch_history(uint32_t window_start_ts,
   if (content_length > static_cast<int>(HA_HISTORY_RESPONSE_MAX_BYTES)) {
     Serial.printf("[ha-history] parse failed: response exceeds %u-byte limit\n",
                   static_cast<unsigned>(HA_HISTORY_RESPONSE_MAX_BYTES));
+    deadline.cancel();
     http.end();
     return FetchResult::BadPayload;
   }
@@ -369,12 +406,17 @@ FetchResult home_assistant_api_fetch_history(uint32_t window_start_ts,
                          window_end_ts);
   if (!parser.ready()) {
     log_history_parse_error(parser);
+    deadline.cancel();
     http.end();
     return FetchResult::BadPayload;
   }
   HistoryParseStream sink(&parser);
   const int transferred = http.writeToStream(&sink);
+  const bool expired = deadline.cancel();
   http.end();
+  if (expired) {
+    return FetchResult::ReadTimeout;
+  }
   if (sink.too_large()) {
     Serial.printf("[ha-history] parse failed: response exceeds %u-byte limit\n",
                   static_cast<unsigned>(HA_HISTORY_RESPONSE_MAX_BYTES));

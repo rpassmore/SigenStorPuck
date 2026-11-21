@@ -26,17 +26,28 @@
 extern "C" {
 #endif
 
+// Counted and logged by src/device/puck_lv_mem.cpp. A silent fallback here puts
+// LVGL objects into the same internal heap mbedTLS needs for a TLS handshake.
+extern void puck_lv_mem_note_fallback(const char* operation, size_t size);
+
 static inline void* puck_lv_malloc(size_t size) {
   void* block = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-  return block != NULL ? block : heap_caps_malloc(size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  if (block != NULL) {
+    return block;
+  }
+  puck_lv_mem_note_fallback("allocation", size);
+  return heap_caps_malloc(size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 }
 
 static inline void* puck_lv_realloc(void* block, size_t size) {
   // realloc leaves the original block intact when it fails, so trying the second
   // heap after the first is safe rather than a leak.
   void* moved = heap_caps_realloc(block, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-  return moved != NULL ? moved
-                       : heap_caps_realloc(block, size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  if (moved != NULL) {
+    return moved;
+  }
+  puck_lv_mem_note_fallback("reallocation", size);
+  return heap_caps_realloc(block, size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 }
 
 static inline void puck_lv_free(void* block) {

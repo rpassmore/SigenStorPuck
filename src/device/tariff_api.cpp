@@ -8,6 +8,7 @@
 
 #include "http_psram.h"
 #include "net.h"
+#include "psram_allocator.h"
 #include "tariff_math.h"
 
 namespace {
@@ -23,6 +24,14 @@ constexpr uint32_t RETRY_MS = 60 * 1000;
 constexpr uint16_t CONNECT_TIMEOUT_MS = 4000;
 constexpr uint16_t TOTAL_TIMEOUT_MS = 8000;
 constexpr size_t PSRAM_HTTP_BUFFER_SIZE = 64 * 1024;
+
+// A year of weekly samples was a worst case of 53 sequential HTTPS requests —
+// around ten minutes of stalled polling when the API stopped answering. Product
+// availability changes rarely, so a quarterly lookback is plenty; three failures
+// or three empty weeks in a row means further requests are not worth the stall.
+constexpr int WEEKS_COUNT = 12;
+constexpr int MAX_CONSECUTIVE_FAILURES = 3;
+constexpr int MAX_EMPTY_WEEKS = 3;
 
 std::vector<TariffProduct> s_import_products;
 std::vector<TariffProduct> s_export_products;
@@ -60,10 +69,11 @@ FetchResult fetch_products() {
 
   const time_t now = time(nullptr);
   constexpr time_t WEEK_SECONDS = 7 * 24 * 3600;
-  constexpr int WEEKS_COUNT = 52;
 
   bool any_http_success = false;
   FetchResult last_error = FetchResult::HttpError;
+  int consecutive_failures = 0;
+  int empty_weeks = 0;
 
   PsramBufferStream payload_buffer(PSRAM_HTTP_BUFFER_SIZE);
   if (!payload_buffer.isValid()) {
@@ -82,15 +92,21 @@ FetchResult fetch_products() {
                                                 CONNECT_TIMEOUT_MS, TOTAL_TIMEOUT_MS);
     if (http_res != FetchResult::Ok) {
       last_error = http_res;
+      ++consecutive_failures;
       delay(1);
+      if (consecutive_failures >= MAX_CONSECUTIVE_FAILURES) {
+        break;
+      }
       continue;
     }
+    consecutive_failures = 0;
 
     PsramAllocator json_allocator;
     JsonDocument doc(&json_allocator);
 
-    // Retain only fields of interest to minimize memory consumption
-    JsonDocument filter;
+    // Retain only fields of interest to minimize memory consumption. The filter
+    // is a document too, so it needs the same PSRAM routing as the payload.
+    JsonDocument filter(&json_allocator);
     JsonObject filter_prod = filter["results"].add<JsonObject>();
     filter_prod["code"] = true;
     filter_prod["full_name"] = true;
@@ -100,16 +116,25 @@ FetchResult fetch_products() {
         deserializeJson(doc, payload_buffer.c_str(), DeserializationOption::Filter(filter));
     if (error != DeserializationError::Ok) {
       last_error = FetchResult::BadPayload;
+      ++consecutive_failures;
       delay(1);
+      if (consecutive_failures >= MAX_CONSECUTIVE_FAILURES) {
+        break;
+      }
       continue;
     }
 
     JsonArrayConst results = doc["results"];
     if (results.isNull()) {
       last_error = FetchResult::BadPayload;
+      ++consecutive_failures;
       delay(1);
+      if (consecutive_failures >= MAX_CONSECUTIVE_FAILURES) {
+        break;
+      }
       continue;
     }
+    consecutive_failures = 0;
 
     any_http_success = true;
 
@@ -133,7 +158,15 @@ FetchResult fetch_products() {
       }
     }
 
+    if (results.size() == 0) {
+      ++empty_weeks;
+    } else {
+      empty_weeks = 0;
+    }
     delay(1);
+    if (empty_weeks >= MAX_EMPTY_WEEKS) {
+      break;
+    }
   }
 
   if (new_imports.empty() && new_exports.empty()) {

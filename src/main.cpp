@@ -34,6 +34,11 @@ constexpr uint32_t UI_REFRESH_MS = 250;
 // The PMIC is read over I2C, so at a human rate rather than per frame.
 constexpr uint32_t POWER_POLL_MS = 5000;
 
+// An OTA image is considered stable once it has completed a poll, or after this
+// grace period for installations with no network source configured.
+constexpr uint32_t UPDATE_CONFIRM_MS = 30000;
+constexpr uint32_t UPDATE_CONFIRM_RETRY_MS = 5000;
+
 // Two lines of storage for the overlay, so a message that has not changed is not
 // rewritten into LVGL 4 times a second.
 char s_overlay_title[48] = {};
@@ -427,5 +432,18 @@ void loop() {
   apply_idle_dim();
   apply_screen_schedule();
   lv_timer_handler();
+
+  // Confirm a newly flashed image only after it has done real work. A crash in
+  // the poller, settings server or day-change path before this point leaves the
+  // image in PENDING_VERIFY so the bootloader rolls back on the next boot.
+  static bool s_update_confirmed = false;
+  static uint32_t last_confirm_attempt = 0;
+  if (!s_update_confirmed &&
+      (poller_status().ever_succeeded || millis() >= UPDATE_CONFIRM_MS) &&
+      (last_confirm_attempt == 0 || millis() - last_confirm_attempt >= UPDATE_CONFIRM_RETRY_MS)) {
+    last_confirm_attempt = millis();
+    s_update_confirmed = updater_confirm_pending_update();
+  }
+
   delay(5);
 }
