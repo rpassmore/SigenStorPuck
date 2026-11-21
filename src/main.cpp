@@ -170,8 +170,8 @@ void refresh_overlay(bool have_snapshot, const PollStatus& status) {
     return;
   }
 
-  // Data is flowing: get out of the way. A stale reading is reported by the plant
-  // node on screen 1, not by covering everything up.
+  // Data is flowing: get out of the way. Staleness is reported by the age on the
+  // power screen and a one-shot toast, not by covering the other screens up.
   set_overlay(nullptr, nullptr, nullptr);
 }
 
@@ -244,6 +244,8 @@ void refresh_ui() {
   static uint32_t seen_snapshot_generation = 0;
   static uint32_t seen_day_generation = 0;
   static int seen_day_offset = 0;
+  static uint32_t seen_age_s = 0;
+  static bool was_stale = false;
 
   Snapshot snapshot;
   uint32_t snapshot_generation = 0;
@@ -251,6 +253,15 @@ void refresh_ui() {
   const PollStatus status = poller_status();
   const bool snapshot_changed =
       have && (first || snapshot_generation != seen_snapshot_generation);
+  // Age advances without a new publish while polls are failing. Reapply the
+  // snapshot once a second on that account, so the STALE label on the power
+  // screen actually counts up instead of freezing at the last good reading.
+  const bool age_changed = have && snapshot.age_s != seen_age_s;
+  const bool stale = have && snapshot.age_s >= PUCK_STALE_AFTER_S;
+  if (stale && !was_stale) {
+    ui_toast("Reading is stale - check the connection");
+  }
+  was_stale = stale;
 
   // The viewed day before the live reading, so one pass never draws the new day's
   // chart against the old day's figures.
@@ -271,13 +282,14 @@ void refresh_ui() {
       ui_clear_day();
     }
   }
-  if (snapshot_changed) {
+  if (snapshot_changed || age_changed) {
     ui_update(snapshot);
   }
 
   seen_snapshot_generation = snapshot_generation;
   seen_day_generation = day_generation;
   seen_day_offset = day_offset;
+  seen_age_s = have ? snapshot.age_s : 0;
   first = false;
   refresh_overlay(have, status);
 }

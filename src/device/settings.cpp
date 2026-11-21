@@ -2,6 +2,7 @@
 
 #include <Preferences.h>
 #include <math.h>
+#include <mutex>
 
 #include "ui/ui.h"  // PUCK_SCREEN_COUNT, for the screen-mask migration
 
@@ -64,10 +65,15 @@ constexpr uint32_t POLL_MIN_S = 2;
 constexpr uint32_t POLL_MAX_S = 300;
 
 Settings s_settings;
+// Recursive because settings_is_provisioned() calls
+// settings_home_assistant_is_configured(), and the masked-token helpers are used
+// while logging from setters that have already taken the lock.
+std::recursive_mutex s_settings_lock;
 
 }  // namespace
 
 void settings_begin() {
+  const std::lock_guard<std::recursive_mutex> lock(s_settings_lock);
   Preferences prefs;
   if (!prefs.begin(NAMESPACE, /*readOnly=*/true)) {
     // First boot: the namespace does not exist yet. Defaults stand.
@@ -191,6 +197,11 @@ const Settings& settings_get() {
   return s_settings;
 }
 
+Settings settings_snapshot() {
+  const std::lock_guard<std::recursive_mutex> lock(s_settings_lock);
+  return s_settings;
+}
+
 bool settings_set_server(const String& base_url, const String& token) {
   Preferences prefs;
   if (!prefs.begin(NAMESPACE, /*readOnly=*/false)) {
@@ -202,9 +213,12 @@ bool settings_set_server(const String& base_url, const String& token) {
   if (!ok) {
     return false;
   }
-  s_settings.base_url = base_url;
-  if (!token.isEmpty()) {
-    s_settings.token = token;
+  {
+    const std::lock_guard<std::recursive_mutex> lock(s_settings_lock);
+    s_settings.base_url = base_url;
+    if (!token.isEmpty()) {
+      s_settings.token = token;
+    }
   }
   Serial.printf("[settings] server set to %s (token %s)\n", base_url.c_str(),
                 settings_token_masked().c_str());
@@ -246,17 +260,20 @@ bool settings_set_home_assistant(const String& base_url, const String& token,
     return false;
   }
 
-  s_settings.ha_base_url = base_url;
-  if (!token.isEmpty()) {
-    s_settings.ha_token = token;
-  }
-  for (size_t i = 0; i < count; ++i) {
-    s_settings.ha_entities[i] = entities[i];
-  }
-  s_settings.ha_solar_forecast_source = forecast_source;
   size_t mapped = 0;
-  for (const String& entity : s_settings.ha_entities) {
-    mapped += entity.isEmpty() ? 0 : 1;
+  {
+    const std::lock_guard<std::recursive_mutex> lock(s_settings_lock);
+    s_settings.ha_base_url = base_url;
+    if (!token.isEmpty()) {
+      s_settings.ha_token = token;
+    }
+    for (size_t i = 0; i < count; ++i) {
+      s_settings.ha_entities[i] = entities[i];
+    }
+    s_settings.ha_solar_forecast_source = forecast_source;
+    for (const String& entity : s_settings.ha_entities) {
+      mapped += entity.isEmpty() ? 0 : 1;
+    }
   }
   Serial.printf("[settings] home assistant set to %s (token stored, %u mappings, forecast %s)\n",
                 base_url.c_str(), static_cast<unsigned>(mapped),
@@ -265,6 +282,7 @@ bool settings_set_home_assistant(const String& base_url, const String& token,
 }
 
 bool settings_home_assistant_is_configured() {
+  const std::lock_guard<std::recursive_mutex> lock(s_settings_lock);
   if (s_settings.ha_base_url.isEmpty() || s_settings.ha_token.isEmpty()) {
     return false;
   }
@@ -287,9 +305,12 @@ bool settings_set_display(uint8_t brightness, uint32_t dim_after_s, uint8_t dim_
   prefs.putUInt(KEY_DIM, dim_after_s);
   prefs.putUChar(KEY_DIM_BRIGHT, dim_brightness);
   prefs.end();
-  s_settings.brightness = brightness;
-  s_settings.dim_after_s = dim_after_s;
-  s_settings.dim_brightness = dim_brightness;
+  {
+    const std::lock_guard<std::recursive_mutex> lock(s_settings_lock);
+    s_settings.brightness = brightness;
+    s_settings.dim_after_s = dim_after_s;
+    s_settings.dim_brightness = dim_brightness;
+  }
   return true;
 }
 
@@ -305,9 +326,12 @@ bool settings_set_screen_off(bool set, uint16_t start_min, uint16_t end_min) {
   prefs.putUShort(KEY_OFF_START, start_min);
   prefs.putUShort(KEY_OFF_END, end_min);
   prefs.end();
-  s_settings.screen_off_set = set;
-  s_settings.screen_off_start_min = start_min;
-  s_settings.screen_off_end_min = end_min;
+  {
+    const std::lock_guard<std::recursive_mutex> lock(s_settings_lock);
+    s_settings.screen_off_set = set;
+    s_settings.screen_off_start_min = start_min;
+    s_settings.screen_off_end_min = end_min;
+  }
   if (set) {
     Serial.printf("[settings] screen off %02u:%02u to %02u:%02u local\n", start_min / 60,
                   start_min % 60, end_min / 60, end_min % 60);
@@ -329,7 +353,10 @@ bool settings_set_poll_interval(uint32_t seconds) {
   }
   prefs.putUInt(KEY_POLL, seconds);
   prefs.end();
-  s_settings.poll_interval_s = seconds;
+  {
+    const std::lock_guard<std::recursive_mutex> lock(s_settings_lock);
+    s_settings.poll_interval_s = seconds;
+  }
   return true;
 }
 
@@ -340,7 +367,10 @@ bool settings_set_source(DataSource source) {
   }
   prefs.putUChar(KEY_SOURCE, static_cast<uint8_t>(source));
   prefs.end();
-  s_settings.source = source;
+  {
+    const std::lock_guard<std::recursive_mutex> lock(s_settings_lock);
+    s_settings.source = source;
+  }
   Serial.printf("[settings] source set to %s (applies on next boot)\n",
                 data_source_name(source));
   return true;
@@ -382,7 +412,10 @@ bool settings_set_hostname(const String& hostname) {
   if (!ok) {
     return false;
   }
-  s_settings.hostname = hostname;
+  {
+    const std::lock_guard<std::recursive_mutex> lock(s_settings_lock);
+    s_settings.hostname = hostname;
+  }
   Serial.printf("[settings] hostname set to %s (applies on next boot)\n", hostname.c_str());
   return true;
 }
@@ -421,11 +454,14 @@ bool settings_set_modbus(const String& host, uint16_t port, uint8_t plant_addres
   prefs.putBytes(KEY_MB_DEVICES, staged, sizeof(staged));
   prefs.end();
 
-  s_settings.modbus_host = host;
-  s_settings.modbus_port = port;
-  s_settings.modbus_plant_address = plant_address;
-  for (size_t i = 0; i < SETTINGS_MAX_MODBUS_DEVICES; ++i) {
-    s_settings.modbus_devices[i] = staged[i];
+  {
+    const std::lock_guard<std::recursive_mutex> lock(s_settings_lock);
+    s_settings.modbus_host = host;
+    s_settings.modbus_port = port;
+    s_settings.modbus_plant_address = plant_address;
+    for (size_t i = 0; i < SETTINGS_MAX_MODBUS_DEVICES; ++i) {
+      s_settings.modbus_devices[i] = staged[i];
+    }
   }
   Serial.printf("[settings] modbus set to %s:%u plant %u\n", host.c_str(), port, plant_address);
   return true;
@@ -485,13 +521,16 @@ bool settings_set_solar(bool location_set, float latitude, float longitude, floa
   prefs.putBytes(KEY_SOL_ARRAYS, staged, sizeof(staged));
   prefs.end();
 
-  s_settings.solar_location_set = location_set;
-  s_settings.latitude = latitude;
-  s_settings.longitude = longitude;
-  s_settings.solar_system_loss = system_loss;
-  s_settings.solar_inverter_cap_kw = inverter_cap_kw;
-  for (size_t i = 0; i < SOLAR_MAX_ARRAYS; ++i) {
-    s_settings.solar_arrays[i] = staged[i];
+  {
+    const std::lock_guard<std::recursive_mutex> lock(s_settings_lock);
+    s_settings.solar_location_set = location_set;
+    s_settings.latitude = latitude;
+    s_settings.longitude = longitude;
+    s_settings.solar_system_loss = system_loss;
+    s_settings.solar_inverter_cap_kw = inverter_cap_kw;
+    for (size_t i = 0; i < SOLAR_MAX_ARRAYS; ++i) {
+      s_settings.solar_arrays[i] = staged[i];
+    }
   }
   Serial.printf("[settings] solar %s at %.4f,%.4f with %u array(s), loss %.2f\n",
                 location_set ? "site" : "site off", static_cast<double>(latitude),
@@ -501,6 +540,7 @@ bool settings_set_solar(bool location_set, float latitude, float longitude, floa
 }
 
 bool settings_is_provisioned() {
+  const std::lock_guard<std::recursive_mutex> lock(s_settings_lock);
   if (s_settings.source == DataSource::Modbus) {
     // No token and no device list needed: a plant with neither an inverter nor a
     // charger listed still fills the power and battery screens from the plant
@@ -514,6 +554,7 @@ bool settings_is_provisioned() {
 }
 
 String settings_token_masked() {
+  const std::lock_guard<std::recursive_mutex> lock(s_settings_lock);
   const size_t length = s_settings.token.length();
   if (length == 0) {
     return String("(unset)");
@@ -525,6 +566,7 @@ String settings_token_masked() {
 }
 
 String settings_ha_token_masked() {
+  const std::lock_guard<std::recursive_mutex> lock(s_settings_lock);
   const size_t length = s_settings.ha_token.length();
   if (length == 0) {
     return String("(unset)");
@@ -542,8 +584,11 @@ void settings_forget_server() {
     prefs.remove(KEY_TOKEN);
     prefs.end();
   }
-  s_settings.base_url = "";
-  s_settings.token = "";
+  {
+    const std::lock_guard<std::recursive_mutex> lock(s_settings_lock);
+    s_settings.base_url = "";
+    s_settings.token = "";
+  }
   Serial.println("[settings] server details cleared");
 }
 
@@ -553,7 +598,10 @@ void settings_forget_home_assistant() {
     prefs.remove(KEY_HA_TOKEN);
     prefs.end();
   }
-  s_settings.ha_token = "";
+  {
+    const std::lock_guard<std::recursive_mutex> lock(s_settings_lock);
+    s_settings.ha_token = "";
+  }
   Serial.println("[settings] Home Assistant token cleared");
 }
 
@@ -564,7 +612,10 @@ bool settings_set_orientation(uint8_t quarter_turns) {
   }
   prefs.putUChar(KEY_ORIENT, quarter_turns & 0x03);
   prefs.end();
-  s_settings.orientation = quarter_turns & 0x03;
+  {
+    const std::lock_guard<std::recursive_mutex> lock(s_settings_lock);
+    s_settings.orientation = quarter_turns & 0x03;
+  }
   return true;
 }
 
@@ -576,8 +627,11 @@ bool settings_set_screensaver(uint32_t rotate_s, uint32_t sweep_min) {
   prefs.putUInt(KEY_ROTATE, rotate_s);
   prefs.putUInt(KEY_SWEEP, sweep_min);
   prefs.end();
-  s_settings.rotate_s = rotate_s;
-  s_settings.sweep_min = sweep_min;
+  {
+    const std::lock_guard<std::recursive_mutex> lock(s_settings_lock);
+    s_settings.rotate_s = rotate_s;
+    s_settings.sweep_min = sweep_min;
+  }
   return true;
 }
 
@@ -588,7 +642,10 @@ bool settings_set_rotate_enabled(bool enabled) {
   }
   prefs.putBool(KEY_ROT_ON, enabled);
   prefs.end();
-  s_settings.rotate_enabled = enabled;
+  {
+    const std::lock_guard<std::recursive_mutex> lock(s_settings_lock);
+    s_settings.rotate_enabled = enabled;
+  }
   return true;
 }
 
@@ -601,8 +658,11 @@ bool settings_set_screens(uint16_t visible, uint16_t rotate) {
   prefs.putUShort(KEY_SCR_ROT, rotate);
   prefs.putUChar(KEY_SCR_KNOWN, PUCK_SCREEN_COUNT);
   prefs.end();
-  s_settings.screens_visible = visible;
-  s_settings.screens_rotate = rotate;
+  {
+    const std::lock_guard<std::recursive_mutex> lock(s_settings_lock);
+    s_settings.screens_visible = visible;
+    s_settings.screens_rotate = rotate;
+  }
   return true;
 }
 
@@ -620,7 +680,10 @@ bool settings_set_fine_rotation(int16_t tenths_of_a_degree) {
   }
   prefs.putShort(KEY_FINE, tenths_of_a_degree);
   prefs.end();
-  s_settings.fine_tenths = tenths_of_a_degree;
+  {
+    const std::lock_guard<std::recursive_mutex> lock(s_settings_lock);
+    s_settings.fine_tenths = tenths_of_a_degree;
+  }
   return true;
 }
 
@@ -631,7 +694,10 @@ bool settings_set_check_updates(bool enabled) {
   }
   prefs.putBool(KEY_UPDATES, enabled);
   prefs.end();
-  s_settings.check_updates = enabled;
+  {
+    const std::lock_guard<std::recursive_mutex> lock(s_settings_lock);
+    s_settings.check_updates = enabled;
+  }
   return true;
 }
 
@@ -649,9 +715,12 @@ bool settings_set_tariffs(const String& import_code, const String& export_code,
   prefs.putUShort(KEY_TARIFF_FETCH_TIME, fetch_time_min);
   prefs.end();
 
-  s_settings.tariff_import_code = import_code;
-  s_settings.tariff_export_code = export_code;
-  s_settings.tariff_fetch_time_min = fetch_time_min;
+  {
+    const std::lock_guard<std::recursive_mutex> lock(s_settings_lock);
+    s_settings.tariff_import_code = import_code;
+    s_settings.tariff_export_code = export_code;
+    s_settings.tariff_fetch_time_min = fetch_time_min;
+  }
   Serial.printf("[settings] tariffs import='%s' export='%s' fetch_time=%02u:%02u\n",
                 import_code.c_str(), export_code.c_str(), fetch_time_min / 60,
                 fetch_time_min % 60);

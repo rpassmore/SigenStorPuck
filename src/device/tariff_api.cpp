@@ -4,6 +4,7 @@
 #include <WiFi.h>
 #include <time.h>
 #include <algorithm>
+#include <mutex>
 
 #include "http_psram.h"
 #include "net.h"
@@ -25,6 +26,10 @@ constexpr size_t PSRAM_HTTP_BUFFER_SIZE = 64 * 1024;
 
 std::vector<TariffProduct> s_import_products;
 std::vector<TariffProduct> s_export_products;
+// The poll task replaces the vectors while the settings page iterates them on
+// the LVGL thread. Readers get a copy taken under this lock, so a reallocation
+// cannot pull the storage out from under an in-flight dropdown render.
+std::mutex s_cache_lock;
 
 uint32_t s_last_attempt_ms = 0;
 FetchResult s_last_result = FetchResult::NotConfigured;
@@ -143,12 +148,18 @@ FetchResult fetch_products() {
       return a.display_name < b.display_name;
   });
 
-  s_import_products = std::move(new_imports);
-  s_export_products = std::move(new_exports);
-  s_ready = true;
+  size_t import_count = 0;
+  size_t export_count = 0;
+  {
+    const std::lock_guard<std::mutex> lock(s_cache_lock);
+    s_import_products = std::move(new_imports);
+    s_export_products = std::move(new_exports);
+    s_ready = true;
+    import_count = s_import_products.size();
+    export_count = s_export_products.size();
+  }
   Serial.printf("[tariff_api] loaded %u import and %u export products\n",
-                static_cast<unsigned>(s_import_products.size()),
-                static_cast<unsigned>(s_export_products.size()));
+                static_cast<unsigned>(import_count), static_cast<unsigned>(export_count));
 
   return FetchResult::Ok;
 }
@@ -164,32 +175,48 @@ FetchResult tariff_api_service() {
   }
 
   const uint32_t now_ms = millis();
+  FetchResult last_result;
+  bool ready;
+  {
+    const std::lock_guard<std::mutex> lock(s_cache_lock);
+    last_result = s_last_result;
+    ready = s_ready;
+  }
   const bool stale = s_last_attempt_ms == 0 || now_ms - s_last_attempt_ms >= REFRESH_MS;
-  const bool retrying_too_soon = s_last_result != FetchResult::Ok && s_last_attempt_ms != 0 &&
+  const bool retrying_too_soon = last_result != FetchResult::Ok && s_last_attempt_ms != 0 &&
                                  now_ms - s_last_attempt_ms < RETRY_MS;
 
-  if ((!s_ready || stale) && !retrying_too_soon) {
+  if ((!ready || stale) && !retrying_too_soon) {
     s_last_attempt_ms = now_ms;
-    s_last_result = fetch_products();
-    if (s_last_result != FetchResult::Ok) {
-      Serial.printf("[tariff_api] product fetch failed: %s\n", fetch_result_name(s_last_result));
+    const FetchResult result = fetch_products();
+    {
+      const std::lock_guard<std::mutex> lock(s_cache_lock);
+      s_last_result = result;
     }
+    if (result != FetchResult::Ok) {
+      Serial.printf("[tariff_api] product fetch failed: %s\n", fetch_result_name(result));
+    }
+    return result;
   }
-  return s_last_result;
+  return last_result;
 }
 
-const std::vector<TariffProduct>& tariff_api_get_import_products() {
+std::vector<TariffProduct> tariff_api_get_import_products() {
+  const std::lock_guard<std::mutex> lock(s_cache_lock);
   return s_import_products;
 }
 
-const std::vector<TariffProduct>& tariff_api_get_export_products() {
+std::vector<TariffProduct> tariff_api_get_export_products() {
+  const std::lock_guard<std::mutex> lock(s_cache_lock);
   return s_export_products;
 }
 
 FetchResult tariff_api_last_result() {
+  const std::lock_guard<std::mutex> lock(s_cache_lock);
   return s_last_result;
 }
 
 bool tariff_api_ready() {
+  const std::lock_guard<std::mutex> lock(s_cache_lock);
   return s_ready;
 }

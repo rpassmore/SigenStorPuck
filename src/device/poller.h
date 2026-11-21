@@ -21,6 +21,40 @@ struct PollStatus {
   bool ever_succeeded = false;
 };
 
+// Connection tests from the settings page. The request is queued here and the
+// fetch runs on the poll task, like the update check: a second TLS session from
+// the LVGL thread would both freeze the display and risk exhausting the heap
+// alongside the poller's own client.
+enum class ConnectionTestKind : uint8_t { None, Server, HomeAssistant };
+
+struct ConnectionTestResult {
+  ConnectionTestKind kind = ConnectionTestKind::None;
+  bool pending = false;
+  bool running = false;
+  bool done = false;
+  FetchResult result = FetchResult::NotConfigured;
+  int status_code = 0;
+  // Server test details.
+  uint32_t age_s = 0;
+  bool home_known = false;
+  float home_kw = 0.0f;
+  // Home Assistant test details.
+  size_t available = 0;
+  size_t configured = 0;
+  size_t unavailable = 0;
+  size_t invalid_number = 0;
+  size_t unsupported_unit = 0;
+};
+
+// Returns immediately. Duplicate requests while one is pending are ignored.
+void poller_request_connection_test(ConnectionTestKind kind);
+
+// Called from the poll task only; runs a queued test, if any.
+void poller_service_connection_tests();
+
+// Mutex-protected copy for the settings page to render.
+ConnectionTestResult poller_connection_test_status();
+
 // Starts the task. Safe to call before the device is provisioned: it will idle
 // and pick the settings up as soon as they are saved.
 void poller_begin();

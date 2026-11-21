@@ -63,7 +63,7 @@ FetchResult s_last_result = FetchResult::NotConfigured;
 // at least one array with a rating. An array row left at its defaults is not a
 // half-configured array, it is an empty slot.
 bool site_from_settings(SolarSite* out) {
-  const Settings& settings = settings_get();
+  const Settings settings = settings_snapshot();
   if (!solar_site_configured(settings.solar_location_set, settings.solar_arrays,
                              SOLAR_MAX_ARRAYS)) {
     return false;

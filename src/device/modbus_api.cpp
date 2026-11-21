@@ -251,7 +251,7 @@ FetchResult modbus_api_fetch(Snapshot* out, int* detail) {
     s_baseline = ModbusDayBaseline{};
     disconnect();
   }
-  const Settings& settings = settings_get();
+  const Settings settings = settings_snapshot();
   if (settings.modbus_host.isEmpty()) {
     return FetchResult::NotConfigured;
   }

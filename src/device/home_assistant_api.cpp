@@ -112,7 +112,7 @@ FetchResult home_assistant_api_fetch(Snapshot* out, int* status_code,
     return FetchResult::NoNetwork;
   }
 
-  const Settings& settings = settings_get();
+  const Settings settings = settings_snapshot();
   const String base_url = settings.ha_base_url;
   const String token = settings.ha_token;
   const bool include_forecast = solar_forecast_uses_home_assistant(
@@ -251,7 +251,7 @@ FetchResult home_assistant_api_fetch_history(uint32_t window_start_ts,
     return FetchResult::NoNetwork;
   }
 
-  const Settings& settings = settings_get();
+  const Settings settings = settings_snapshot();
   const bool secure = settings.ha_base_url.startsWith("https://");
   if (secure && !clock_is_plausible()) {
     return FetchResult::ClockUnset;

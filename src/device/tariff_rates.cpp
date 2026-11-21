@@ -294,7 +294,7 @@ void service_rate_target(const String& code,
 }  // namespace
 
 FetchResult tariff_rates_service() {
-  const Settings& settings = settings_get();
+  const Settings settings = settings_snapshot();
   const String& imp_code = settings.tariff_import_code;
   const String& exp_code = settings.tariff_export_code;
 

@@ -279,7 +279,7 @@ void updater_begin() {
 }
 
 bool updater_enabled() {
-  return settings_get().check_updates;
+  return settings_snapshot().check_updates;
 }
 
 void updater_request_check(bool force) {

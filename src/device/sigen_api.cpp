@@ -94,7 +94,7 @@ static FetchResult fetch_path(const char* path, String* body, int* status_code) 
     return FetchResult::NoNetwork;
   }
 
-  const Settings& settings = settings_get();
+  const Settings settings = settings_snapshot();
   const bool secure = settings.base_url.startsWith("https://");
 
   if (secure && !clock_is_plausible()) {
