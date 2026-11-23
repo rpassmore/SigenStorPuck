@@ -8,6 +8,7 @@
 
 #include "history.h"
 #include "home_assistant.h"
+#include "psram_allocator.h"
 
 static constexpr size_t HA_HISTORY_MAX_FIELDS = 4;
 static constexpr size_t HA_HISTORY_RESPONSE_MAX_BYTES = 1024 * 1024;
@@ -125,7 +126,9 @@ class HaHistoryParser {
 
   char object_[HA_HISTORY_OBJECT_MAX] = {};
   size_t object_length_ = 0;
-  JsonDocument object_doc_;
+  // Declared before the document so the allocator outlives every parse it backs.
+  PsramAllocator object_allocator_;
+  JsonDocument object_doc_{&object_allocator_};
   char series_entity_[HA_ENTITY_ID_MAX + 1] = {};
   size_t series_index_ = 0;
   size_t series_object_count_ = 0;

@@ -4,14 +4,12 @@
 
 #include "board_config.h"
 #include "enrol_url.h"
-#include "home_assistant_api.h"
 #include "modbus_api.h"
 #include "net.h"
 #include "poller.h"
 #include "power.h"
 #include "settings.h"
 #include "screen_window.h"
-#include "sigen_api.h"
 #include "solar_api.h"
 #include "tariff_api.h"
 #include "updater.h"
@@ -178,9 +176,118 @@ void append_source_section_end(String* html, bool active) {
   *html += active ? "</section>" : "</details>";
 }
 
+// The test result is structured so the fetch can happen on the poll task; all
+// wording stays here, where the rest of the page's copy lives.
+String connection_test_message(const ConnectionTestResult& test, bool* error) {
+  *error = false;
+  String message;
+  if (test.kind == ConnectionTestKind::Server) {
+    if (test.result == FetchResult::Ok) {
+      message = "Connected. Plant reading is ";
+      message += test.age_s;
+      message += "s old";
+      if (test.home_known) {
+        message += ", house load ";
+        message += String(test.home_kw, 2);
+        message += " kW";
+      }
+      message += ".";
+      return message;
+    }
+    switch (test.result) {
+      case FetchResult::Unauthorised:
+        message = "Rejected (HTTP " + String(test.status_code) +
+                  "). The kiosk token has been revoked — create a new one in Admin and paste "
+                  "the new enrolment URL.";
+        break;
+      case FetchResult::ClockUnset:
+        message = "The clock is not set yet, so an HTTPS certificate cannot be checked. "
+                  "Wait a moment for NTP, or use an http:// URL on the LAN.";
+        break;
+      case FetchResult::TlsFailed:
+        message = "TLS failed. The certificate could not be validated — check the hostname "
+                  "matches the certificate.";
+        break;
+      case FetchResult::NotConfigured:
+        message = "No server URL or token stored yet.";
+        break;
+      default:
+        message = String("Failed: ") + fetch_result_name(test.result);
+        if (test.status_code != 0) {
+          message += " (HTTP " + String(test.status_code) + ")";
+        }
+        break;
+    }
+    *error = true;
+    return message;
+  }
+
+  if (test.result == FetchResult::Ok) {
+    message = "Connected to Home Assistant. ";
+    message += test.available;
+    message += " of ";
+    message += test.configured;
+    message += " mapped entities returned usable values";
+    const size_t bad = test.unavailable + test.invalid_number + test.unsupported_unit;
+    if (bad > 0) {
+      message += "; ";
+      message += bad;
+      message += " remain unknown";
+      if (test.unsupported_unit > 0) {
+        message += " (";
+        message += test.unsupported_unit;
+        message += test.unsupported_unit == 1 ? " unsupported unit" : " unsupported units";
+        message += ")";
+      }
+    }
+    message += ".";
+    return message;
+  }
+  switch (test.result) {
+    case FetchResult::Unauthorised:
+      message = "Home Assistant rejected the token (HTTP " + String(test.status_code) +
+                "). Create or enter a valid long-lived access token.";
+      break;
+    case FetchResult::EntityUnavailable:
+      message = "Home Assistant responded, but every mapped entity was unknown, unavailable, "
+                "non-numeric, or used an unsupported unit. Check the mappings and entity states.";
+      break;
+    case FetchResult::BadPayload:
+      message = "Home Assistant returned a malformed template response.";
+      break;
+    case FetchResult::ClockUnset:
+      message = "The clock is not set yet, so the Home Assistant HTTPS certificate cannot be "
+                "checked. Wait for NTP.";
+      break;
+    case FetchResult::TlsFailed:
+      message = "Could not establish Home Assistant HTTPS. Check that it is reachable and the "
+                "URL hostname matches a certificate trusted by the device.";
+      break;
+    case FetchResult::NotConfigured:
+      message = "Save a Home Assistant URL, token, and at least one entity mapping first.";
+      break;
+    case FetchResult::NoNetwork:
+      message = "The Puck is not connected to WiFi.";
+      break;
+    case FetchResult::ConnectFailed:
+      message = "Home Assistant is unreachable at the configured URL.";
+      break;
+    default:
+      message = String("Home Assistant test failed: ") + fetch_result_name(test.result);
+      if (test.status_code != 0) {
+        message += " (HTTP " + String(test.status_code) + ")";
+      }
+      message += ".";
+      break;
+  }
+  *error = true;
+  return message;
+}
+
 String page(const String& message, bool message_is_error) {
   const Settings& settings = settings_get();
   const PollStatus status = poller_status();
+  const ConnectionTestResult test = poller_connection_test_status();
 
   // Kicked off before anything is rendered, so the answer is usually waiting by
   // the time the page refreshes itself a couple of seconds later. Returns
@@ -194,10 +301,24 @@ String page(const String& message, bool message_is_error) {
   html.reserve(12288);
   html += "<!doctype html><html><head><meta charset=utf-8>";
   html += "<meta name=viewport content='width=device-width,initial-scale=1'>";
-  // Come back for the answer, but only while there is one coming. Any other state
-  // is final, so the page settles instead of reloading under you while you type.
-  if (update.state == UpdateState::Checking || update.state == UpdateState::Downloading) {
+  // A connection test is queued for the poll task. Keep asking for the page until
+  // its answer lands, so the browser does not sit on "Testing..." forever. The
+  // update check does the same thing; both settle into a final state.
+  const bool test_waiting = test.pending || test.running;
+  if (test_waiting || update.state == UpdateState::Checking ||
+      update.state == UpdateState::Downloading) {
     html += "<meta http-equiv=refresh content=3>";
+  }
+  // An explicit message from the form that was just submitted wins. Otherwise
+  // show the last connection-test result, or the waiting note while it runs.
+  String notice = message;
+  bool notice_error = message_is_error;
+  if (notice.isEmpty()) {
+    if (test_waiting) {
+      notice = "Testing the connection...";
+    } else if (test.done) {
+      notice = connection_test_message(test, &notice_error);
+    }
   }
   html += "<title>SigenStorPuck</title><style>";
   html += PAGE_STYLE;
@@ -265,11 +386,11 @@ String page(const String& message, bool message_is_error) {
     html += "</p>";
   }
 
-  if (message.length() > 0) {
+  if (notice.length() > 0) {
     html += "<p class=";
-    html += message_is_error ? "bad" : "ok";
+    html += notice_error ? "bad" : "ok";
     html += ">";
-    html += escape_html(message);
+    html += escape_html(notice);
     html += "</p>";
   }
 
@@ -585,7 +706,7 @@ String page(const String& message, bool message_is_error) {
   html += "<label for=trfimp>Import Tariff</label>";
   html += "<select id=trfimp name=trfimp>";
   html += "<option value=''" + String(settings.tariff_import_code.isEmpty() ? " selected" : "") + ">None / Unconfigured</option>";
-  const auto& imports = tariff_api_get_import_products();
+  const auto imports = tariff_api_get_import_products();
   bool found_imp = false;
   for (const auto& prod : imports) {
     const bool sel = (prod.code == settings.tariff_import_code);
@@ -602,7 +723,7 @@ String page(const String& message, bool message_is_error) {
   html += "<label for=trfexp>Export Tariff</label>";
   html += "<select id=trfexp name=trfexp>";
   html += "<option value=''" + String(settings.tariff_export_code.isEmpty() ? " selected" : "") + ">None / Unconfigured</option>";
-  const auto& exports = tariff_api_get_export_products();
+  const auto exports = tariff_api_get_export_products();
   bool found_exp = false;
   for (const auto& prod : exports) {
     const bool sel = (prod.code == settings.tariff_export_code);
@@ -882,51 +1003,12 @@ void handle_save() {
 }
 
 void handle_test() {
-  Snapshot snapshot;
-  int status_code = 0;
-  const FetchResult result = sigen_api_fetch(&snapshot, &status_code);
-
-  String message;
-  if (result == FetchResult::Ok) {
-    message = "Connected. Plant reading is ";
-    message += snapshot.age_s;
-    message += "s old";
-    if (snapshot.power.home.known) {
-      message += ", house load ";
-      message += String(snapshot.power.home.value, 2);
-      message += " kW";
-    }
-    message += ".";
-    send_page(message, false);
-    return;
-  }
-
-  // The wording matters: these need different actions from the reader.
-  switch (result) {
-    case FetchResult::Unauthorised:
-      message = "Rejected (HTTP " + String(status_code) +
-                "). The kiosk token has been revoked — create a new one in Admin and paste "
-                "the new enrolment URL.";
-      break;
-    case FetchResult::ClockUnset:
-      message = "The clock is not set yet, so an HTTPS certificate cannot be checked. "
-                "Wait a moment for NTP, or use an http:// URL on the LAN.";
-      break;
-    case FetchResult::TlsFailed:
-      message = "TLS failed. The certificate could not be validated — check the hostname "
-                "matches the certificate.";
-      break;
-    case FetchResult::NotConfigured:
-      message = "No server URL or token stored yet.";
-      break;
-    default:
-      message = String("Failed: ") + fetch_result_name(result);
-      if (status_code != 0) {
-        message += " (HTTP " + String(status_code) + ")";
-      }
-      break;
-  }
-  send_page(message, true);
+  // Queued for the poll task, never run here: this handler is on the LVGL thread,
+  // and a second TLS session here would freeze the display and compete for heap
+  // with the poller's own client. The page refreshes until the result lands.
+  poller_request_connection_test(ConnectionTestKind::Server);
+  poller_wake();
+  send_page("", false);
 }
 
 void handle_home_assistant() {
@@ -991,73 +1073,10 @@ void handle_home_assistant() {
 }
 
 void handle_ha_test() {
-  Snapshot snapshot;
-  int status_code = 0;
-  HaParseInfo info;
-  const FetchResult result =
-      home_assistant_api_fetch(&snapshot, &status_code, &info, /*latch_day_bounds=*/false);
-
-  String message;
-  if (result == FetchResult::Ok) {
-    message = "Connected to Home Assistant. ";
-    message += info.available;
-    message += " of ";
-    message += info.configured;
-    message += " mapped entities returned usable values";
-    const size_t bad = info.unavailable + info.invalid_number + info.unsupported_unit;
-    if (bad > 0) {
-      message += "; ";
-      message += bad;
-      message += " remain unknown";
-      if (info.unsupported_unit > 0) {
-        message += " (";
-        message += info.unsupported_unit;
-        message += " unsupported unit";
-        message += info.unsupported_unit == 1 ? ")" : "s)";
-      }
-    }
-    message += ".";
-    send_page(message, false);
-    return;
-  }
-  switch (result) {
-    case FetchResult::Unauthorised:
-      message = "Home Assistant rejected the token (HTTP " + String(status_code) +
-                "). Create or enter a valid long-lived access token.";
-      break;
-    case FetchResult::EntityUnavailable:
-      message = "Home Assistant responded, but every mapped entity was unknown, unavailable, "
-                "non-numeric, or used an unsupported unit. Check the mappings and entity states.";
-      break;
-    case FetchResult::BadPayload:
-      message = "Home Assistant returned a malformed template response.";
-      break;
-    case FetchResult::ClockUnset:
-      message = "The clock is not set yet, so the Home Assistant HTTPS certificate cannot be "
-                "checked. Wait for NTP.";
-      break;
-    case FetchResult::TlsFailed:
-      message = "Could not establish Home Assistant HTTPS. Check that it is reachable and the "
-                "URL hostname matches a certificate trusted by the device.";
-      break;
-    case FetchResult::NotConfigured:
-      message = "Save a Home Assistant URL, token, and at least one entity mapping first.";
-      break;
-    case FetchResult::NoNetwork:
-      message = "The Puck is not connected to WiFi.";
-      break;
-    case FetchResult::ConnectFailed:
-      message = "Home Assistant is unreachable at the configured URL.";
-      break;
-    default:
-      message = String("Home Assistant test failed: ") + fetch_result_name(result);
-      if (status_code != 0) {
-        message += " (HTTP " + String(status_code) + ")";
-      }
-      message += ".";
-      break;
-  }
-  send_page(message, true);
+  // Same queued path as the server test: no HTTPS on the LVGL thread.
+  poller_request_connection_test(ConnectionTestKind::HomeAssistant);
+  poller_wake();
+  send_page("", false);
 }
 
 void handle_display() {

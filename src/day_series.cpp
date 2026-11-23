@@ -4,6 +4,7 @@
 
 #include "forecast_store.h"
 #include "history.h"
+#include "psram_allocator.h"
 
 namespace {
 
@@ -80,7 +81,8 @@ void store_forecast(JsonArrayConst forecast_kw, uint32_t first_minute) {
 }  // namespace
 
 bool day_series_parse(HistoryBank bank, const char* json, size_t length, uint32_t now_minute) {
-  JsonDocument doc;
+  PsramAllocator json_allocator;
+  JsonDocument doc(&json_allocator);
   if (deserializeJson(doc, json, length) != DeserializationError::Ok) {
     return false;
   }

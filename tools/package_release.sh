@@ -94,11 +94,13 @@ for entry in "${variants[@]}"; do
 	# header, so the installer page must fetch the binary from its own origin. The
 	# Pages job publishes this manifest and merged.bin together under <slug>/, so
 	# "merged.bin" resolves next to the manifest. `board` is the cross-flash guard.
+	firmware_size=$(stat -c %s "${out}/firmware.bin")
 	cat >"${out}/manifest.json" <<JSON
 {
   "name": "SigenStorPuck — ${name}",
   "version": "${version}",
   "board": "${slug}",
+  "firmware_size": ${firmware_size},
   "new_install_prompt_erase": true,
   "builds": [
     {

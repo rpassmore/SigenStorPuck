@@ -11,9 +11,9 @@
 // state is usable, preserving the caller's last good Snapshot on failure.
 //
 // `latch_day_bounds` false leaves the day boundaries and units that the Recorder
-// backfill reuses untouched. The settings page's connection test passes false: it
-// runs on the web server's task, and those values belong to the poll task, which
-// reads them without a lock between its own fetches.
+// backfill reuses untouched. The settings page's connection test passes false
+// even though it now runs on the poll task: it is a test of the configured
+// mappings, not a live poll, and must not replace the Recorder's latch.
 FetchResult home_assistant_api_fetch(Snapshot* out, int* status_code,
                                      HaParseInfo* parse_info = nullptr,
                                      bool latch_day_bounds = true);

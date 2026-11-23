@@ -174,7 +174,15 @@ struct Settings {
 // Loads from NVS, falling back to defaults. Safe to call before WiFi is up.
 void settings_begin();
 
+// Reference to the live settings, for callers on the UI/loop task only.
+//
+// Settings contain heap-backed Strings that setters reassign. Reading that
+// reference from the poller while a web handler writes it is a use-after-free,
+// so cross-task callers must take a copy with settings_snapshot() instead.
 const Settings& settings_get();
+
+// Mutex-protected copy for callers on another task (the poller).
+Settings settings_snapshot();
 
 // Stores the server URL and token, both validated by the caller. Returns false
 // if NVS rejected the write.

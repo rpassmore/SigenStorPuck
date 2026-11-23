@@ -8,6 +8,8 @@
 
 #include "board_config.h"
 #include "day_series.h"
+#include "http_deadline.h"
+#include "http_psram.h"
 #include "settings.h"
 
 namespace {
@@ -28,6 +30,10 @@ constexpr const char* USER_AGENT = "SigenStorPuck/" PUCK_FW_VERSION " (ESP32-S3)
 // stalls should not hold the poll loop for the whole read timeout.
 constexpr uint16_t CONNECT_TIMEOUT_MS = 4000;
 constexpr uint16_t TOTAL_TIMEOUT_MS = 8000;
+
+// Larger than any summary or day-series payload the server is expected to send,
+// but still bounded so a broken host cannot grow a String until TLS starves.
+constexpr size_t MAX_BODY_BYTES = 256 * 1024;
 
 // The ESP-IDF root certificate bundle that Arduino-ESP32 embeds. One mechanism
 // validates both the VPS and, later, GitHub's release CDN, and it survives a CA
@@ -94,7 +100,7 @@ static FetchResult fetch_path(const char* path, String* body, int* status_code) 
     return FetchResult::NoNetwork;
   }
 
-  const Settings& settings = settings_get();
+  const Settings settings = settings_snapshot();
   const bool secure = settings.base_url.startsWith("https://");
 
   if (secure && !clock_is_plausible()) {
@@ -103,33 +109,34 @@ static FetchResult fetch_path(const char* path, String* body, int* status_code) 
 
   // WiFiClientSecure is large; both live on the stack of the calling task, which
   // is why the poll task is given a generous one.
-  WiFiClient plain;
-  WiFiClientSecure tls;
-  WiFiClient* client = nullptr;
+  DeadlineClient<WiFiClient> plain;
+  DeadlineClient<WiFiClientSecure> tls;
+  NetworkClient* client = nullptr;
   if (secure) {
     // Validate, never setInsecure(): this request carries a 365-day kiosk token
     // over the public internet, and an unvalidated connection hands that token to
     // anyone who can spoof DNS or sit on the route.
     tls.setCACertBundle(rootca_crt_bundle_start,
                         static_cast<size_t>(rootca_crt_bundle_end - rootca_crt_bundle_start));
-    // No setTimeout() here: HTTPClient::setTimeout below covers the read timeout
-    // once the stream exists, so this would be redundant.
+    // No setTimeout() here. The framework's socket option lands on fd 0 for
+    // NetworkClientSecure — the source of the harmless log noise below — and
+    // cannot be trusted to bound a stalled TLS read. HttpDeadline, armed after
+    // the client is chosen, is the real wall-clock guard.
     //
-    // Note on log noise you will see on every HTTPS poll:
     //   [E][NetworkClient.cpp:323] setSocketOption(): fail on 0, errno: 9
-    // three times per fetch. That is upstream and harmless. NetworkClient::read
-    // and ::write apply SO_RCVTIMEO/SO_SNDTIMEO using the base class's fd, but
-    // NetworkClientSecure never sets it — TLS runs its own socket through
-    // sslclient — so the option lands on fd 0 and fails. Polls succeed regardless.
-    // Silencing it would mean giving up the timeouts below, which is a far worse
-    // trade than a noisy log: they are what stops a stalled server holding the
-    // poll loop.
     client = &tls;
   } else {
     // Plain HTTP is for the LAN only, and only because the user asked for an
     // http:// URL explicitly.
     client = &plain;
   }
+
+  // HTTPClient's socket option cannot bound a stalled NetworkClientSecure read.
+  // Shut the socket down at the wall-clock deadline instead; both possible
+  // clients drain the deadline before any stop().
+  HttpDeadline deadline(*client, TOTAL_TIMEOUT_MS);
+  plain.setDeadline(&deadline);
+  tls.setDeadline(&deadline);
 
   HTTPClient http;
   http.setConnectTimeout(CONNECT_TIMEOUT_MS);
@@ -158,22 +165,37 @@ static FetchResult fetch_path(const char* path, String* body, int* status_code) 
   }
 
   if (status <= 0) {
+    const bool expired = deadline.cancel();
     http.end();
+    if (expired) {
+      return FetchResult::ReadTimeout;
+    }
     // HTTPClient folds every transport failure into a negative code; on an https
     // URL the overwhelmingly likely cause is the handshake.
     return secure ? FetchResult::TlsFailed : FetchResult::ConnectFailed;
   }
   if (status == HTTP_CODE_UNAUTHORIZED || status == HTTP_CODE_FORBIDDEN) {
+    deadline.cancel();
     http.end();
     return FetchResult::Unauthorised;
   }
   if (status != HTTP_CODE_OK) {
+    deadline.cancel();
     http.end();
     return FetchResult::HttpError;
   }
 
-  *body = http.getString();
+  LimitedStringStream stream(MAX_BODY_BYTES);
+  const int written = http.writeToStream(&stream);
+  const bool expired = deadline.cancel();
   http.end();
+  if (expired) {
+    return FetchResult::ReadTimeout;
+  }
+  if (written < 0 || stream.overflow() || stream.length() == 0) {
+    return FetchResult::BadPayload;
+  }
+  *body = stream.value();
   return FetchResult::Ok;
 }
 

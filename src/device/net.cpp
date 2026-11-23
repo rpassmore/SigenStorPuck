@@ -96,7 +96,7 @@ void net_begin() {
   // Read once and held: mDNS and the DHCP hostname are both registered a single
   // time, when the network comes up, so a change made later cannot apply until
   // the next boot however it is stored.
-  s_active_hostname = settings_get().hostname;
+  s_active_hostname = settings_snapshot().hostname;
   s_setup_ap = String(SETUP_AP_PREFIX) + "-" + device_suffix();
 
   WiFi.setHostname(s_active_hostname.c_str());

@@ -139,6 +139,7 @@ FetchResult read_span(uint8_t unit, uint16_t start, uint16_t words, uint16_t* ou
   request[11] = static_cast<uint8_t>(words & 0xFF);
 
   if (s_client.write(request, sizeof(request)) != sizeof(request)) {
+    disconnect();
     return FetchResult::ConnectFailed;
   }
   s_client.flush();
@@ -146,21 +147,39 @@ FetchResult read_span(uint8_t unit, uint16_t start, uint16_t words, uint16_t* ou
   const uint32_t deadline = millis() + RESPONSE_TIMEOUT_MS;
   uint8_t header[MBAP_LENGTH + 1];
   if (!read_exactly(header, sizeof(header), deadline)) {
+    // A partial frame leaves stale bytes on the socket; the next exchange would
+    // read them as its own header and fail again. Start clean instead.
+    disconnect();
     return FetchResult::ReadTimeout;
   }
 
   const uint16_t transaction = static_cast<uint16_t>((header[0] << 8) | header[1]);
-  if (transaction != s_transaction) {
-    // A reply to a request we have already given up on. The connection is out of
-    // step, so drop it rather than try to resynchronise mid-stream.
+  const uint16_t protocol_id = static_cast<uint16_t>((header[2] << 8) | header[3]);
+  const uint16_t length = static_cast<uint16_t>((header[4] << 8) | header[5]);
+  const uint8_t response_unit = header[6];
+  if (transaction != s_transaction || protocol_id != 0 || response_unit != unit || length < 2) {
+    // Header fields are cheap to check and expensive to get wrong: a mismatched
+    // transaction, protocol, unit or short length means this reply belongs to a
+    // different exchange (or to a different device) and the stream is out of step.
+    disconnect();
     return FetchResult::ProtocolError;
   }
 
   const uint8_t function = header[7];
   if ((function & 0x80) != 0) {
+    // Exception PDU is the function byte plus one code, plus the unit ID in the
+    // length count: unit + PDU = 3 bytes.
+    if (length != 3) {
+      disconnect();
+      return FetchResult::ProtocolError;
+    }
     uint8_t code = 0;
     const bool got_code = read_exactly(&code, 1, deadline);
-    if (got_code && detail != nullptr) {
+    if (!got_code) {
+      disconnect();
+      return FetchResult::ReadTimeout;
+    }
+    if (detail != nullptr) {
       *detail = code;
     }
     // Named, and with the span that caused it. The poll log can only report one
@@ -176,14 +195,20 @@ FetchResult read_span(uint8_t unit, uint16_t start, uint16_t words, uint16_t* ou
     return FetchResult::ProtocolError;
   }
   if (function != MODBUS_FC_READ_ONLY) {
+    disconnect();
     return FetchResult::ProtocolError;
   }
 
   uint8_t byte_count = 0;
   if (!read_exactly(&byte_count, 1, deadline)) {
+    disconnect();
     return FetchResult::ReadTimeout;
   }
-  if (byte_count != words * 2) {
+  // MBAP length counts the unit ID and the whole PDU: unit (1) + function (1) +
+  // byte count (1) + register bytes. A response that disagrees with either the
+  // register count or its own length is not safe to hand to the decoder.
+  if (byte_count != words * 2 || length != static_cast<uint16_t>(byte_count) + 3) {
+    disconnect();
     return FetchResult::ProtocolError;
   }
 
@@ -191,6 +216,7 @@ FetchResult read_span(uint8_t unit, uint16_t start, uint16_t words, uint16_t* ou
   // the most significant register first, and so does every Modbus device.
   uint8_t* raw = reinterpret_cast<uint8_t*>(out);
   if (!read_exactly(raw, byte_count, deadline)) {
+    disconnect();
     return FetchResult::ReadTimeout;
   }
   for (uint16_t i = 0; i < words; ++i) {
@@ -251,7 +277,7 @@ FetchResult modbus_api_fetch(Snapshot* out, int* detail) {
     s_baseline = ModbusDayBaseline{};
     disconnect();
   }
-  const Settings& settings = settings_get();
+  const Settings settings = settings_snapshot();
   if (settings.modbus_host.isEmpty()) {
     return FetchResult::NotConfigured;
   }

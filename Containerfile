@@ -39,6 +39,9 @@ RUN pip install --no-cache-dir \
     platformio \
     esptool
 
+# Install OpenCode CLI/TUI globally.
+RUN curl -fsSL https://opencode.ai/install | OPENCODE_INSTALL_DIR=/usr/local/bin bash
+
 USER ${USERNAME}
 
 WORKDIR /workspace

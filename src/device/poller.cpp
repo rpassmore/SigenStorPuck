@@ -4,6 +4,8 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 
+#include <mutex>
+
 #include "modbus_api.h"
 #include "home_assistant_api.h"
 #include "history_backfill_retry.h"
@@ -53,6 +55,12 @@ uint32_t s_snapshot_generation = 0;
 uint32_t s_day_generation = 0;
 volatile bool s_wake = false;
 
+// Connection-test requests come from the web handler on the LVGL thread; the
+// result is read back there on the next page load. Separate from s_lock so a
+// page render never waits on a network fetch, and vice versa.
+ConnectionTestResult s_connection_test;
+std::mutex s_connection_test_lock;
+
 // Task-local in practice — only poll_task touches these — but kept here with the
 // rest of the task's state rather than as statics buried in the loop.
 uint32_t s_last_day_ms = 0;
@@ -92,6 +100,23 @@ String date_for_offset(int days_back) {
   return String(text);
 }
 
+// A failed poll leaves the last good Snapshot in place. Its stored `age_s` is a
+// property of that reading and never advances, so derive the age a reader should
+// see from millis() instead. Server snapshots already carry an age from the plant:
+// take the larger of the two, because time has kept passing here as well.
+//
+// Unsigned subtraction is intentional; millis() wrapping is handled by it.
+uint32_t age_s_for_reader(const Snapshot& snapshot, const PollStatus& status) {
+  uint32_t age = snapshot.age_s;
+  if (status.last_ok_ms != 0) {
+    const uint32_t since_ok = (millis() - status.last_ok_ms) / 1000;
+    if (since_ok > age) {
+      age = since_ok;
+    }
+  }
+  return age;
+}
+
 uint32_t backoff_for(uint32_t failures) {
   if (failures == 0) {
     return 0;
@@ -129,6 +154,33 @@ FetchResult fetch_source(DataSource source, Snapshot* out, int* detail) {
   return FetchResult::NotConfigured;
 }
 
+// Runs on the poll task, after its own fetch has closed its client. Nothing from
+// this function calls ui_update or touches LVGL: the web page polls for the
+// result with a meta refresh instead.
+void run_connection_test(ConnectionTestKind kind, ConnectionTestResult* result) {
+  Snapshot snapshot;
+  int status_code = 0;
+  if (kind == ConnectionTestKind::Server) {
+    result->result = sigen_api_fetch(&snapshot, &status_code);
+    result->status_code = status_code;
+    result->age_s = snapshot.age_s;
+    result->home_known = snapshot.power.home.known;
+    result->home_kw = snapshot.power.home.value;
+  } else if (kind == ConnectionTestKind::HomeAssistant) {
+    // Keep the Recorder's latched day bounds and units untouched: this is a test
+    // of the configured mappings, not a live poll.
+    HaParseInfo info;
+    result->result =
+        home_assistant_api_fetch(&snapshot, &status_code, &info, /*latch_day_bounds=*/false);
+    result->status_code = status_code;
+    result->available = info.available;
+    result->configured = info.configured;
+    result->unavailable = info.unavailable;
+    result->invalid_number = info.invalid_number;
+    result->unsupported_unit = info.unsupported_unit;
+  }
+}
+
 void publish(const Snapshot& snapshot, const PollStatus& status) {
   if (xSemaphoreTake(s_lock, portMAX_DELAY) == pdTRUE) {
     s_snapshot = snapshot;
@@ -159,15 +211,18 @@ void poll_task(void* /*argument*/) {
 
   // Read once, not per cycle: the source applies on the next boot, so it cannot
   // change under this loop, and re-reading it would invite paths to interleave.
-  const DataSource source = settings_get().source;
+  const Settings settings = settings_snapshot();
+  const DataSource source = settings.source;
   const SourceCapabilities capabilities = data_source_capabilities(source);
 
   for (;;) {
     Snapshot fetched;
     int http_status = 0;
     const FetchResult result = fetch_source(source, &fetched, &http_status);
+    // Re-read every cycle: unlike `source`, this preference takes effect on the
+    // next fetch. A snapshot keeps the poll task off the live Strings.
     const SolarForecastSource ha_forecast_source =
-        settings_get().ha_solar_forecast_source;
+        settings_snapshot().ha_solar_forecast_source;
 
     status.last_result = result;
     status.last_http_status = http_status;
@@ -382,9 +437,13 @@ void poll_task(void* /*argument*/) {
         xSemaphoreGive(s_lock);
       }
     }
+    // Both of these are network work on this task, never on the LVGL thread.
+    // A requested connection test goes first: it is what somebody is waiting on
+    // in a browser, and the update check can wait for the next cycle.
+    poller_service_connection_tests();
     updater_service();
 
-    uint32_t wait_ms = settings_get().poll_interval_s * 1000;
+    uint32_t wait_ms = settings_snapshot().poll_interval_s * 1000;
     const uint32_t backoff_ms = backoff_for(status.consecutive_failures);
     if (backoff_ms > wait_ms) {
       wait_ms = backoff_ms;
@@ -408,12 +467,53 @@ void poll_task(void* /*argument*/) {
 
 }  // namespace
 
+void poller_request_connection_test(ConnectionTestKind kind) {
+  if (kind == ConnectionTestKind::None) {
+    return;
+  }
+  const std::lock_guard<std::mutex> lock(s_connection_test_lock);
+  if (s_connection_test.pending) {
+    return;  // Already queued or running; the page will show that result.
+  }
+  s_connection_test = ConnectionTestResult{};
+  s_connection_test.kind = kind;
+  s_connection_test.pending = true;
+}
+
+void poller_service_connection_tests() {
+  ConnectionTestKind kind = ConnectionTestKind::None;
+  {
+    const std::lock_guard<std::mutex> lock(s_connection_test_lock);
+    if (!s_connection_test.pending || s_connection_test.running) {
+      return;
+    }
+    s_connection_test.running = true;
+    s_connection_test.done = false;
+    kind = s_connection_test.kind;
+  }
+
+  ConnectionTestResult result;
+  result.kind = kind;
+  run_connection_test(kind, &result);
+  result.pending = false;
+  result.running = false;
+  result.done = true;
+
+  const std::lock_guard<std::mutex> lock(s_connection_test_lock);
+  s_connection_test = result;
+}
+
+ConnectionTestResult poller_connection_test_status() {
+  const std::lock_guard<std::mutex> lock(s_connection_test_lock);
+  return s_connection_test;
+}
+
 void poller_begin() {
   if (s_lock != nullptr) {
     return;
   }
   s_lock = xSemaphoreCreateMutex();
-  const DataSource source = settings_get().source;
+  const DataSource source = settings_snapshot().source;
   xTaskCreatePinnedToCore(poll_task, "puck_poll", TASK_STACK_BYTES, nullptr, TASK_PRIORITY,
                           nullptr, TASK_CORE);
   Serial.printf("[poll] task started on core %d, source %s, stack %u\n",
@@ -443,6 +543,7 @@ bool poller_snapshot(Snapshot* out, uint32_t* generation) {
     }
     if (s_snapshot.valid) {
       *out = s_snapshot;
+      out->age_s = age_s_for_reader(s_snapshot, s_status);
       have = true;
     }
     xSemaphoreGive(s_lock);
